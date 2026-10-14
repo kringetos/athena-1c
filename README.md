@@ -9,7 +9,8 @@
 Основное окружение — Windows x64 и Python 3.12 с Tcl/Tk. Для учебного примера 1С не требуется; для выгрузки и загрузки нужна установленная платформа и доступ к информационной базе.
 
 ```powershell
-# Выполнять в корне клона
+git clone https://github.com/kringetos/athena-1c.git
+Set-Location athena-1c
 py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 .\.venv\Scripts\python.exe -m athena.server
