@@ -85,7 +85,8 @@ class EditingTests(unittest.TestCase):
     def test_success_is_verified_by_readback_and_replay_is_rejected(self):
         preview=self.create();draft=self.workspace.drafts[preview['id']]
         exported=self.root/'exported';shutil.copytree(self.reference,exported)
-        target=exported/self.file['path'];target.write_text(self.content,encoding='utf-8-sig')
+        # Preserve explicit CRLF input: Windows write_text would translate each LF again.
+        target=exported/self.file['path'];target.write_bytes(self.content.encode('utf-8-sig'))
         with patch('athena.server.STATE',self.root/'recent.json'),patch('athena.server.configuration_changed',return_value=False),patch('athena.server.upload_module') as upload,patch('athena.server.export_configuration',return_value=exported):
             self.workspace.apply_change({'id':preview['id']});self.wait()
         upload.assert_called_once();self.assertEqual(self.workspace.job['status'],'ready')

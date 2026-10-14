@@ -1,4 +1,6 @@
-* text=auto
+* text=auto eol=lf
+*.bsl text eol=lf
+*.os text eol=lf
 *.py text eol=lf
 *.js text eol=lf
 *.html text eol=lf
