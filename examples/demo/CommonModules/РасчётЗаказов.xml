@@ -1,0 +1,2 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"><CommonModule uuid="demo-common"><Properties><Name>РасчётЗаказов</Name><Synonym>Расчёт сумм заказов</Synonym><Server>true</Server><ClientManagedApplication>false</ClientManagedApplication><Global>false</Global><ServerCall>true</ServerCall></Properties></CommonModule></MetaDataObject>

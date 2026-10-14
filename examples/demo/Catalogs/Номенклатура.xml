@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core">
+<Catalog uuid="demo-catalog"><Properties><Name>Номенклатура</Name><Synonym>Товары и услуги</Synonym><CodeLength>9</CodeLength><DescriptionLength>150</DescriptionLength><Hierarchical>true</Hierarchical></Properties><ChildObjects><Attribute uuid="demo-sku"><Properties><Name>Артикул</Name><Type><v8:Type>xs:string</v8:Type><v8:StringQualifiers><v8:Length>30</v8:Length></v8:StringQualifiers></Type></Properties></Attribute></ChildObjects></Catalog>
+</MetaDataObject>

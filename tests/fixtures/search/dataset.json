@@ -1,0 +1,25 @@
+{
+  "description": "Синтетический лексический baseline на учебной конфигурации. Вопросы с перефразированием отмечают ограничения до подключения смыслового поиска.",
+  "sources": {
+    "CommonModules/РасчётЗаказов/Ext/Module.bsl": "common.bsl",
+    "Documents/ЗаказПокупателя/Ext/ObjectModule.bsl": "document.bsl"
+  },
+  "cases": [
+    {"query": "СуммаЗаказа", "expected": ["СуммаЗаказа"], "category": "exact"},
+    {"query": "суммазаказа", "expected": ["СуммаЗаказа"], "category": "case"},
+    {"query": "ПроверитьОстатки", "expected": ["ПроверитьОстаткиТоваров"], "category": "prefix"},
+    {"query": "Рассчитать Скидку Клиента", "expected": ["РассчитатьСкидкуКлиента"], "category": "identifier_words"},
+    {"query": "валюту договора", "expected": ["ПолучитьВалютуДоговора"], "category": "comment"},
+    {"query": "остатки товаров на складе", "expected": ["ПроверитьОстаткиТоваров"], "category": "comment"},
+    {"query": "электронной почте", "expected": ["ОтправитьУведомлениеПокупателю"], "category": "comment"},
+    {"query": "СуммаДокумента", "expected": ["ПередЗаписью"], "category": "body"},
+    {"query": "Клиент.ПроцентСкидки", "expected": ["РассчитатьСкидкуКлиента"], "category": "body"},
+    {"query": "следующего заказа", "expected": ["СледующийНомерЗаказа"], "category": "comment"},
+    {"query": "ОбработкаПроведения", "expected": ["ОбработкаПроведения"], "category": "exact"},
+    {"query": "СуммаЗаказа Товары", "expected": ["СуммаЗаказа", "ПередЗаписью", "ТоварыКоличествоПриИзменении"], "category": "multiple"},
+    {"query": "где считается стоимость покупки", "expected": ["СуммаЗаказа"], "category": "paraphrase"},
+    {"query": "как проверить наличие продукции", "expected": ["ПроверитьОстаткиТоваров"], "category": "paraphrase"},
+    {"query": "НесуществующаяФункцияXYZ", "expected": [], "category": "negative"},
+    {"query": "космические корабли", "expected": [], "category": "negative"}
+  ]
+}

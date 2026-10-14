@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses">
+  <Configuration uuid="demo-configuration"><Properties><Name>ДемонстрацияAthena</Name><Synonym>Учебная конфигурация · демонстрационные данные</Synonym><Version>1.0</Version><CompatibilityMode>Version8_3_24</CompatibilityMode><DefaultRunMode>ManagedApplication</DefaultRunMode></Properties><ChildObjects><Catalog>Номенклатура</Catalog><Document>ЗаказПокупателя</Document><CommonModule>РасчётЗаказов</CommonModule><InformationRegister>ЦеныНоменклатуры</InformationRegister></ChildObjects></Configuration>
+</MetaDataObject>
