@@ -1,0 +1,17 @@
+Window: "Core.As", App: 1cv8.exe.
+	0 диалоговое окно Core.As Secondary Actions: Raise
+		1 поле Value: >>> ATHENA DIAGNOSTIC: main entered >>> ATHENA DIAGNOSTIC: main currentProcess null=false >>> ATHENA DIAGNOSTIC: timer=1 currentProcess ready=true frame HWND=0 >>> ATHENA DIAGNOSTIC: run entered >>> ATHENA DIAGNOSTIC: symbols >>> ATHENA DIAGNOSTIC: paths >>> ATHENA DIAGNOSTIC: profile >>> ATHENA DIAGNOSTIC: frame >>> ATHENA DIAGNOSTIC: run completed ID: 1001
+			2 полоса прокрутки (disabled, settable, float) По вертикали Value: 0 ID: NonClientVerticalScrollBar
+				3 кнопка (disabled) Строка вверх ID: UpButton
+				4 кнопка (disabled) Строка вниз ID: DownButton
+			5 полоса прокрутки (disabled, settable, float) По горизонтали Value: 0 ID: NonClientHorizontalScrollBar
+				6 кнопка (disabled) Колонка влево ID: UpButton
+				7 кнопка (disabled) Колонка вправо ID: DownButton
+			8 бегунок (disabled)
+		9 кнопка Очистить ID: 1002
+		10 название (settable, string) Value: Core.As
+			11 строка меню Система ID: MenuBar
+				12 элемент меню Система
+			13 кнопка Свернуть
+			14 кнопка Развернуть
+			15 кнопка Закрыть

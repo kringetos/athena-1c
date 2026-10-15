@@ -1,0 +1,18 @@
+﻿15.10.2026 01:41:33 |+++| Создан модуль: "Snegopat"
+                    |  .|   Путь к нему: G:\AthenaData\1C Athena AI\.athena\integrations\test-8.5\patched-runtime\modules\Snegopat\
+                    |  .| Текущая папка: C:\Users\Kring\Documents\ChatGPT\1C Athena AI
+15.10.2026 01:41:33 |+++| Зарегистрировано общее API для движка AngelScript. Всего сущностей: 48
+15.10.2026 01:41:33 |+++| Загружена библиотека G:\AthenaData\1C Athena AI\.athena\integrations\test-8.5\patched-runtime\modules\Snegopat\lib\x86\snegopat.dll
+15.10.2026 01:41:33 |+++| Snegopat.dll loaded
+15.10.2026 01:41:33 | + | Создан модуль Snegopat
+15.10.2026 01:41:33 |+++| Зарегистрировано внешнее API для модуля Snegopat. Всего сущностей: 360
+15.10.2026 01:41:33 |!!!| profile.v*92             getProfileService           94 Исключение AngelScript.
+                    |  .|     Процесс: 1cv8.exe ( 8.05.0001.1522 )
+                    |  .|     Core.As: 1.0.2.4
+                    |  .|      Модуль: Snegopat (  ) 
+                    |  .|        Файл: G:\AthenaData\1C Athena AI\.athena\integrations\test-8.5\patched-runtime\modules\snegopat\v8api\profile.v
+                    |  .|      Строка: 94
+                    |  .|     Функция: IProfileService@ getProfileService()
+                    |  .|      Строка: 94
+                    |  .|    Описание: Null pointer access
+15.10.2026 01:41:33 |!!!| Bad AngelScript result code in c:\Projects\snegopatrb\core_as\AngelScriptExec.cpp / runModule

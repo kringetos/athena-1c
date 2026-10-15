@@ -201,7 +201,10 @@ class DocumentKnowledge:
             rows=db.execute('''SELECT d.id,d.name,d.hash document_hash,c.ordinal,c.start_line,c.end_line,c.content,v.vector
                 FROM documents d JOIN chunks c ON c.document_id=d.id LEFT JOIN vectors v ON v.hash=c.hash AND v.model=?
                 WHERE d.project=? AND d.enabled=1''',(model,project)).fetchall()
-        if not rows:return {'items':[],'mode':'lexical','warning':''}
+        state=self.listing(project)
+        index_state=[{k:r[k] for k in ('id','status','enabled','total','done')} for r in state['documents']]
+        if not rows:return {'items':[],'mode':'lexical','warning':'','index_state':index_state,
+                            'excluded':{'disabled_documents':sum(not r['enabled'] for r in state['documents']),'below_threshold':0,'limit':0}}
         terms=set(re.findall(r'\w{2,}',query.lower()));query_vector=None;warning=''
         if any(r['vector'] for r in rows):
             try:
@@ -210,7 +213,7 @@ class DocumentKnowledge:
                     if runtime.model_id==model:query_vector=np.asarray(runtime.query(query),dtype=np.float32)
             except Exception:warning='Смысловой поиск документов недоступен; используется поиск по словам.'
         else:warning='Документы ещё индексируются; используется поиск по словам.'
-        scored=[]
+        scored=[];below_threshold=0
         for row in rows:
             words=(row['name']+' '+row['content']).lower();lexical=sum(t in words for t in terms)
             similarity=0
@@ -218,9 +221,12 @@ class DocumentKnowledge:
                 value=np.frombuffer(row['vector'],dtype=np.float32)
                 if value.shape==query_vector.shape:similarity=float(np.dot(value,query_vector)/max(float(np.linalg.norm(value)*np.linalg.norm(query_vector)),1e-12))
             if lexical or similarity>.35:
-                scored.append((lexical/(len(terms) or 1)+similarity,dict(row)))
+                scored.append((lexical/(len(terms) or 1)+similarity,{**dict(row),'lexical_matches':lexical,'similarity':similarity}))
+            else:below_threshold+=1
         scored.sort(key=lambda item:item[0],reverse=True)
-        return {'items':[{k:v for k,v in r.items() if k!='vector'} for _,r in scored[:limit]],'mode':'hybrid' if query_vector is not None else 'lexical','warning':warning}
+        return {'items':[{k:v for k,v in r.items() if k!='vector'} for _,r in scored[:limit]],'mode':'hybrid' if query_vector is not None else 'lexical','warning':warning,
+                'index_state':index_state,'excluded':{'disabled_documents':sum(not r['enabled'] for r in state['documents']),
+                'below_threshold':below_threshold,'limit':max(0,len(scored)-limit)}}
 
     def close(self):
         self.stop.set()

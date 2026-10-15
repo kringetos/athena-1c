@@ -102,14 +102,14 @@ CREATE TABLE IF NOT EXISTS object_indexes(snapshot TEXT PRIMARY KEY);
                 'signature': symbol['name'] + '(' + symbol['parameters'] + ')',
                 'parameters': symbol['parameter_details'], 'export': symbol['export'], 'syntax_valid': symbol['syntax_valid'],
                 'directives': symbol.get('directives', []),
-                'description': symbol['comment'], 'location': {'snapshot': snapshot, 'path': symbol['path'], 'line': symbol['declaration_line'], 'file_id': symbol['file_id'], 'file_hash': symbol['file_hash']}}
+                'description': symbol['comment'], 'location': {'snapshot': snapshot, 'path': symbol['path'], 'line': symbol['declaration_line'], 'end_line':symbol['end_line'], 'file_id': symbol['file_id'], 'file_hash': symbol['file_hash']}}
 
     def search(self, query, source='', snapshot='', scope='all', exact=False, limit=20):
         if not isinstance(query, str) or len(query) > 500: raise ValueError('Запрос должен быть строкой до 500 символов.')
         if scope not in {'all', 'platform', 'metadata', 'code'}: raise ValueError('Неизвестная область поиска.')
         query = query.strip(); limit = min(max(int(limit), 1), 50); groups = {}
         if not query: return {'query': query, 'groups': {}, 'source': source, 'snapshot': snapshot}
-        if scope in {'all', 'platform'}:
+        if scope == 'platform' or (scope == 'all' and source):
             self.ensure_platform(source)
             with self.reference.connect() as db:
                 rows = db.execute('SELECT record FROM platform_symbols WHERE source=? AND (name=? OR short_name=? OR alias=? OR short_alias=?) LIMIT ?', (source, *([query.casefold()] * 4), limit)).fetchall()
@@ -124,7 +124,7 @@ CREATE TABLE IF NOT EXISTS object_indexes(snapshot TEXT PRIMARY KEY);
             groups['platform'] = matches
         if scope in {'metadata', 'code'}: self.check_snapshot(snapshot)
         if snapshot and scope in {'all', 'metadata', 'code'}:
-            self.ensure_objects(snapshot)
+            if scope in {'all','metadata'}:self.ensure_objects(snapshot)
             if scope in {'all', 'metadata'}:
                 escaped = query.casefold().replace('!', '!!').replace('%', '!%').replace('_', '!_')
                 with self.reference.connect() as db:
@@ -141,7 +141,8 @@ CREATE TABLE IF NOT EXISTS object_indexes(snapshot TEXT PRIMARY KEY);
                     # Reuse canonical FTS without initializing/migrating the live project DB.
                     symbols = self.reader.search(snapshot, query, limit)
                 groups['code'] = [self.code_record(symbol, snapshot) for symbol in symbols]
-        return {'query': query, 'source': source, 'snapshot': snapshot, 'exact': exact, 'groups': groups}
+        return {'query': query, 'source': source, 'snapshot': snapshot, 'exact': exact, 'groups': groups,
+                'excluded_scopes':{'platform':'platform_source_not_selected'} if scope=='all' and not source else {}}
 
     def members(self, owner, source, limit=100):
         if not isinstance(owner, str) or len(owner) > 500: raise ValueError('Недопустимый тип.')

@@ -255,7 +255,22 @@ class Knowledge:
         secondary=' AND '.join('"'+word+'"*' for word in parts)
         expression=f'({primary}) OR ({secondary})' if secondary and secondary!=primary else primary
         with self.connect() as db:
-            rows=db.execute('''SELECT s.data,bm25(symbol_search,0,0,8,3,1) AS score FROM symbol_search JOIN symbols s ON s.id=symbol_search.symbol_id WHERE symbol_search MATCH ? AND s.snapshot_id=? ORDER BY score LIMIT ?''',(expression,snapshot,min(max(limit,1),50))).fetchall()
+            rows=None
+            # A tiny project must not rank matches across every large configuration in the DB.
+            count=db.execute('SELECT count(*) FROM symbols WHERE snapshot_id=?',(snapshot,)).fetchone()[0]
+            if count<=2000:
+                db.execute('PRAGMA temp_store=MEMORY')
+                db.execute("CREATE VIRTUAL TABLE temp.scoped_search USING fts5(symbol_id UNINDEXED,name,context,body,tokenize='unicode61')")
+                size=0
+                for row in db.execute("SELECT s.data,json_extract(o.data,'$.kind') owner_kind,json_extract(o.data,'$.properties.Synonym') synonym FROM symbols s JOIN modules m ON m.snapshot_id=s.snapshot_id AND m.file_id=s.file_id LEFT JOIN metadata o ON o.snapshot_id=m.snapshot_id AND o.node_id=m.owner_id WHERE s.snapshot_id=?",(snapshot,)):
+                    size+=len(row['data'])
+                    if size>8_000_000:break
+                    sym=json.loads(row['data']);context=' / '.join([row['owner_kind'] or '',sym['owner_name'],sym['module_name'],sym['path'],row['synonym'] or ''])
+                    db.execute('INSERT INTO scoped_search VALUES(?,?,?,?)',(sym['id'],search_text(sym['name']),search_text(context+' '+sym['comment']),search_text(sym['code'])))
+                else:
+                    rows=db.execute('''SELECT s.data,bm25(scoped_search,0,8,3,1) AS score FROM scoped_search JOIN symbols s ON s.id=scoped_search.symbol_id WHERE scoped_search MATCH ? ORDER BY score LIMIT ?''',(expression,min(max(limit,1),50))).fetchall()
+            if rows is None:
+                rows=db.execute('''SELECT s.data,bm25(symbol_search,0,0,8,3,1) AS score FROM symbol_search JOIN symbols s ON s.id=symbol_search.symbol_id WHERE symbol_search MATCH ? AND s.snapshot_id=? ORDER BY score LIMIT ?''',(expression,snapshot,min(max(limit,1),50))).fetchall()
             result=[json.loads(row['data']) for row in rows]
             result.sort(key=lambda r:(r['name'].casefold()!=query.strip().casefold(),query.strip().casefold() not in r['name'].casefold()))
             return [{k:r[k] for k in ['id','name','kind','parameters','parameter_details','async','syntax_valid','export','start_line','declaration_line','end_line','owner_id','file_id','path','owner_name','module_name','file_hash','comment']} for r in result]

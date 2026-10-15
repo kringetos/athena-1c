@@ -105,8 +105,8 @@ class ServerTests(unittest.TestCase):
             with self.assertRaises(HTTPError) as denied: self.request(path,body,authenticated=False)
             self.assertEqual(denied.exception.code,403)
         catalog=self.request('/api/agent/tools')
-        self.assertEqual(len(catalog['tools']),18)
-        self.assertEqual(len(catalog['modes']['analyze']),9)
+        self.assertEqual(len(catalog['tools']),19)
+        self.assertEqual(len(catalog['modes']['analyze']),10)
         self.assertEqual(catalog['automatic'],['create_change_set'])
         self.assertFalse(self.request('/api/agent/context')['ready'])
 

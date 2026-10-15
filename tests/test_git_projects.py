@@ -45,6 +45,9 @@ class GitProjectTests(unittest.TestCase):
         self.sources.connect('another',{'url':str(self.remote)})
         self.assertEqual(len(self.sources.listing('project')['repositories']),1)
         found=self.sources.search('project','скидки')['items'][0]
+        read=self.sources.read_snapshot('project',found['id'])
+        self.assertIn('десять',read['content']);self.assertTrue(read['enabled'])
+        with self.assertRaises(ValueError):self.sources.read_snapshot('unrelated',found['id'])
         self.assertEqual(found['source'],'git');self.assertIn('десять',found['content']);self.assertEqual(found['start_line'],1)
         self.assertEqual(self.sources.search('unrelated','скидки')['items'],[])
         with self.assertRaises(ValueError):self.sources.repo('another',self.repo['id'])

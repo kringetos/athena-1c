@@ -299,6 +299,12 @@ class GitProjects:
         scored.sort(key=lambda p:(-p[0],p[1]['name'],p[1]['start_line']))
         return {'items':[item for _,item in scored[:max(1,min(limit,10))]],'mode':'lexical','warning':''}
 
+    def read_snapshot(self, project, identity):
+        with self.db() as db:
+            row=db.execute("SELECT r.id||':'||f.path id,r.name||'/'||f.path name,f.hash,f.content,r.enabled FROM files f JOIN repos r ON r.id=f.repo WHERE r.project=? AND r.id||':'||f.path=?",(project,identity)).fetchone()
+        if not row:raise ValueError('Git-источник текущего проекта не найден.')
+        return dict(row)
+
     def revision(self, project):
         with self.db() as db:
             rows=[tuple(r) for r in db.execute('SELECT r.id,r.enabled,f.path,f.hash FROM repos r LEFT JOIN files f ON f.repo=r.id WHERE r.project=? ORDER BY r.id,f.path',(project,))]

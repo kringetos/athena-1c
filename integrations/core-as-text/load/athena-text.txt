@@ -1,0 +1,4 @@
+[athena_text]
+modul = AthenaText
+proc = 1cv8.exe
+test = test.dll, isNeedLoad

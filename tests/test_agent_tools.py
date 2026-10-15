@@ -68,7 +68,7 @@ class AgentTests(unittest.TestCase):
     def test_schema_rejects_extra_arguments_bool_integer_and_unknown_tool(self):
         for tool,args in [('read_module',{'file_id':self.file_id,'start_line':True}),('read_module',{'file_id':self.file_id,'path':'../../secret'}),('apply_to_1c',{}),('get_calls',{'symbol_id':'x','direction':'other'}),('create_object',{'set_id':'x','revision':1,'spec':{'kind':'Catalog','name':'X','evil':1}})]:
             self.assertFalse(self.tools.call(self.request(tool,args))['ok'])
-        self.assertEqual(len(definitions()),18)
+        self.assertEqual(len(definitions()),19)
 
     def test_complete_metadata_pages_and_counts_do_not_depend_on_code_search(self):
         from collections import Counter

@@ -67,7 +67,7 @@
   <dialog id="upload-dialog"><div class="dialog-title"><h2 id="upload-heading">Загрузка модуля в 1С</h2><button id="close-upload" aria-label="Закрыть загрузку">×</button></div>
     <p id="upload-target"></p><div id="upload-path" class="source-path"></div><pre id="upload-diff" aria-label="Разница изменений"></pre>
     <p id="upload-notice" class="hint">Перед загрузкой сохраните изменения в Конфигураторе и закройте редактор этого модуля. Проверка конфликтов видит только сохранённую конфигурацию. Новая логика начнёт работать после обычного обновления конфигурации БД в 1С. Синтаксический контроль выполняйте в Конфигураторе.</p>
-    <div id="upload-password-row" hidden><label for="upload-password">Пароль подключения 1С</label><input id="upload-password" type="password" autocomplete="new-password"></div>
+    <div id="upload-password-row" hidden><label for="upload-password">Пароль подключения 1С</label><input id="upload-password" type="password" autocomplete="new-password"><small class="field-hint">Если у пользователя 1С нет пароля, оставьте поле пустым. Если пароль уже в памяти Athena, будет использован он.</small></div>
     <small id="upload-backup" class="field-hint"></small><div id="upload-status" class="export-progress" role="status" hidden></div><div id="upload-error" class="error" role="alert"></div>
     <details id="upload-log" hidden><summary>Журнал 1С</summary><pre id="upload-log-text"></pre></details>
     <div class="dialog-actions"><button id="accept-rebase" hidden>Принять текущую основу</button><button id="confirm-upload" class="primary">Загрузить в 1С</button></div>
@@ -77,7 +77,7 @@
     <p id="auto-connection" class="field-hint"></p>
     <label class="check-label"><input id="auto-enabled" type="checkbox">Автоматически обновлять из 1С</label>
     <label for="auto-interval">Интервал проверки</label><select id="auto-interval"><option value="30">30 секунд</option><option value="60" selected>1 минута</option><option value="120">2 минуты</option><option value="300">5 минут</option></select>
-    <div id="auto-password-row" hidden><label for="auto-password">Пароль подключения 1С</label><input id="auto-password" type="password" autocomplete="new-password"><small class="field-hint">Только в памяти до остановки Athena. В файлы пароль не записывается.</small></div>
+    <div id="auto-password-row" hidden><label for="auto-password">Пароль подключения 1С</label><input id="auto-password" type="password" autocomplete="new-password"><small class="field-hint">Если у пользователя 1С нет пароля, оставьте поле пустым. Пароль хранится только в памяти до остановки Athena, в файлы не записывается.</small></div>
     <p class="hint">Проверка работает, пока запущена Athena, даже если вкладка закрыта. Несохранённые изменения редактора 1С недоступны. На большой конфигурации выгрузка и чтение изменений могут занять несколько минут. После перезапуска автообновление нужно включить снова; при необходимости введите пароль подключения ниже.</p>
     <div id="auto-status" class="export-progress" role="status"></div><div id="auto-error" class="error" role="alert"></div>
     <div class="dialog-actions"><button id="apply-auto" class="primary">Применить</button></div>

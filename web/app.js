@@ -1075,9 +1075,17 @@ $("#ai-index-settings-open").onclick=()=>$("#index-settings-open").onclick();
   $('#ai-panel .ai-header h2').textContent='Вопрос по конфигурации';
   $('#ai-panel .ai-eyebrow').textContent='ATHENA ASSISTANT';
   $('#ai-panel .ai-body>p').textContent='Задайте вопрос — Athena найдёт ответ в метаданных и коде вашего проекта.';
-  $('#ai-question').placeholder='Введите вопрос по конфигурации…';$('#ai-answer-button').textContent='Спросить';
+  $('#ai-question').placeholder='Что хотите узнать о конфигурации?\nНапример: где рассчитывается сумма заказа?\nКакие методы вызываются при записи документа?\nКакие правила проекта нужно соблюдать?';$('#ai-answer-button').textContent='Спросить';
   const shortcuts=document.createElement('div');shortcuts.className='home-shortcuts';
   shortcuts.innerHTML='<button type="button" data-prompt="Объясни назначение основных методов конфигурации и укажи, в каких модулях они находятся.">Объяснить метод <span>↗</span></button><button type="button" data-prompt="Объясни связи между документами и справочниками конфигурации. Приведи подтверждения из метаданных и кода.">Связи <span>↗</span></button>';
+  for(const [label,prompt] of [
+    ['Расчёты','Найди, где в конфигурации рассчитываются суммы документов. Укажи методы, формулы и строки кода.'],
+    ['Цепочка вызовов','Покажи цепочку вызовов при записи документа: обработчики, вызываемые методы и задействованные модули. Если документов несколько, помоги выбрать нужный.'],
+    ['Работа с данными','Найди, где документ читает и записывает данные регистров. Укажи объекты и подтверждения из кода.'],
+    ['Проверить код','Помоги выбрать метод для проверки и найди в нём возможные ошибки. Объясни причины и отдели подтверждённые проблемы от предположений. Код не изменяй.'],
+    ['Правила проекта','Какие обязательные правила и проверенные исправления есть для текущего проекта? Приведи источники и объясни, как применять их при разработке.'],
+    ['Состав конфигурации','Какие документы есть в конфигурации? Покажи полный список с именами и синонимами.']
+  ]){const button=document.createElement('button');button.type='button';button.dataset.prompt=prompt;button.textContent=label+' ↗';button.title=prompt;shortcuts.append(button);}
   const contextButton=$('#ai-context-button');contextButton.textContent='Найти данные';contextButton.title='Найти контекст для введённого вопроса без генерации ответа';shortcuts.insertBefore(contextButton,shortcuts.lastElementChild);
   $('#ai-question-form').after(shortcuts);
   shortcuts.addEventListener('click',e=>{const b=e.target.closest('[data-prompt]');if(b){$('#ai-question').value=b.dataset.prompt;$('#ai-question').focus();}});

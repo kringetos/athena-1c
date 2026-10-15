@@ -45,6 +45,25 @@ class DocumentationTests(unittest.TestCase):
         self.assertEqual(restored.read(job['id'])['content'],'# Исправленная документация')
         self.assertEqual(len(restored.listing()['documents']),1)
 
+    def test_full_template_includes_evidence_rules_and_no_invented_stub_behavior(self):
+        system=instructions()
+        self.assertIn('Фильтрация пустоты и заглушек',system)
+        self.assertIn('Не перечисляйте гипотетические требования.',system)
+        self.assertIn('Параметры, интерфейсы и структуры данных',system)
+        self.assertIn('неполной выборке sources',system)
+        self.assertIn('Не добавляй необъявленные параметры',system)
+
+    def test_reference_prose_is_not_supplied_as_implementation_evidence(self):
+        captured=[]
+        def model(*args,**kwargs):
+            captured.append(json.loads(args[3][1]['content']))
+            return '# Код\nОписание только по исходникам.',False
+        with patch.object(self.w,'reference_context',side_effect=AssertionError('Reference prose is not code evidence')):
+            with patch('athena.documentation.generate',side_effect=model):job=self.finished(self.docs.start(self.request()))
+        self.assertEqual(job['status'],'ready',job)
+        self.assertEqual(captured[0]['references'],[])
+        self.assertIn('source_code_only',captured[0]['evidence_policy'])
+
     def test_selection_uses_utf16_offsets_and_unsaved_draft(self):
         identity=self.fixture.file_id;info=self.w.catalog.file(identity)
         content='// 😀 начало\nПроцедура Выбранная()\nКонецПроцедуры\n'

@@ -103,6 +103,20 @@ class EditingTests(unittest.TestCase):
         self.assertEqual(self.workspace.drafts[preview['id']]['status'],'needs_review')
         with self.assertRaises(ValueError):self.workspace.apply_change({'id':preview['id']})
 
+    def test_named_user_without_password_can_upload_and_verify(self):
+        self.workspace.passwords.clear()
+        preview=self.create()
+        exported=self.root/'exported';shutil.copytree(self.reference,exported)
+        (exported/self.file['path']).write_bytes(self.content.encode('utf-8-sig'))
+        with patch('athena.server.configuration_changed',return_value=False) as check,patch('athena.server.upload_module') as upload,patch('athena.server.export_configuration',return_value=exported) as export:
+            self.workspace.apply_change({'id':preview['id'],'password':''});self.wait()
+        self.assertEqual(self.workspace.job['status'],'ready',self.workspace.job)
+        self.assertEqual(self.workspace.drafts[preview['id']]['status'],'applied')
+        for operation in (check,upload,export):
+            operation.assert_called_once()
+            self.assertEqual(operation.call_args.args[1],'')
+        self.assertNotIn(self.profile['id'],self.workspace.passwords)
+
     def test_zero_process_exit_without_dump_result_is_not_success(self):
         preview=self.create();draft=self.workspace.drafts[preview['id']]
         class Done:

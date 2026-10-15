@@ -230,19 +230,36 @@ def upload_object(profile,password,draft,progress=lambda **kwargs:None):
                'Добавление объекта в конфигурацию 1С',300)
 
 
+def metadata_shape(element, parents=()):
+    """Compare metadata strictly, normalizing only observed platform defaults.
+
+    1C 8.5 emits these omitted attribute properties on import/export. Nondefault
+    values, unknown properties, UUIDs, types and qualifiers remain significant.
+    """
+    path=parents+(local(element.tag),)
+    def implicit_default(node):
+        if path[-2:]!=('Attribute','Properties'):return False
+        if list(node):return False
+        tag=local(node.tag);value=(node.text or '').strip()
+        namespace=element.tag.rsplit('}',1)[0]+'}'
+        if node.tag!=namespace+tag:return False
+        if tag=='FillFromFillingValue':return not node.attrib and value=='false'
+        if tag=='FillValue':
+            return node.attrib=={'{http://www.w3.org/2001/XMLSchema-instance}nil':'true'} and not value
+        if tag=='Use' and path==('Catalog','ChildObjects','Attribute','Properties'):
+            return not node.attrib and value=='ForItem'
+        return False
+    return (element.tag,tuple(sorted(element.attrib.items())),(element.text or '').strip(),
+            tuple(metadata_shape(c,path) for c in element if not implicit_default(c)))
+
+
 def verify_object(catalog,draft):
     spec=draft['spec'];path=catalog.root/draft['path']
     if not path.is_file():raise ValueError('В новой выгрузке отсутствует созданный объект.')
     actual=ET.parse(path).getroot();obj=child(actual,spec['kind'])
     expected=child(ET.parse(Path(draft['folder'])/'files'/draft['path']).getroot(),spec['kind'])
     if obj is None or obj.get('uuid')!=expected.get('uuid'):raise ValueError('Идентификатор созданного объекта не совпал.')
-    def shape(element):
-        props=child(element,'Properties');nested=child(element,'ChildObjects');typ=child(props,'Type')
-        synonym=child(props,'Synonym')
-        return (local(element.tag),child(props,'Name').text,tuple(t.strip() for t in synonym.itertext() if t.strip()) if synonym is not None else (),
-                tuple((local(e.tag),(e.text or '').strip()) for e in typ.iter()) if typ is not None else (),
-                tuple(shape(e) for e in nested if local(e.tag) in {'Attribute','TabularSection'}) if nested is not None else ())
-    if shape(obj)!=shape(expected):raise ValueError('Реквизиты созданного объекта не совпали с подготовленным пакетом.')
+    if metadata_shape(obj)!=metadata_shape(expected):raise ValueError('Свойства созданного объекта не совпали с подготовленным пакетом.')
     for relative in draft['selected'][2:]:
         p=catalog.root/relative
         if not p.is_file() or text_hash(read_text(p))!=text_hash(read_text(Path(draft['folder'])/'files'/relative)):

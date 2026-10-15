@@ -1,0 +1,4 @@
+﻿15.10.2026 01:08:42 |!!!| Препроцессинг файла G:\AthenaData\1C Athena AI\.athena\integrations\test-8.5\runtime\modules\snegopat\v8api\process.v. Строка 5.
+                    |  .|    Объявлена ошибка:
+                    |  .| Unsupported version of 1C - Эта версия 1С не поддерживается!
+15.10.2026 01:08:42 |!!!| Не удалось подготовить внешнее API.

@@ -10,7 +10,7 @@ from xml.dom import minidom as DOM
 import xml.etree.ElementTree as ET
 from athena.catalog import read_text, text_hash, canonical, child, local
 from athena.bsl_index import extract
-from athena.objects import prepare_object, normalize_spec, digest, validate_stage, object_import_command, TYPE_ORDER
+from athena.objects import prepare_object, normalize_spec, digest, validate_stage, object_import_command, TYPE_ORDER, metadata_shape
 from athena.editing import run_import
 
 
@@ -230,9 +230,7 @@ def verify_set(catalog, package):
         actual_path = catalog.root / obj['path']
         if not actual_path.is_file(): raise ValueError('После загрузки отсутствует объект: ' + obj['path'])
         actual = child(ET.parse(actual_path).getroot(), obj['spec']['kind']); expected = child(ET.parse(stage / obj['path']).getroot(), obj['spec']['kind'])
-        def shape(element):
-            return (element.tag, tuple(sorted(element.attrib.items())), (element.text or '').strip(), tuple(shape(c) for c in element))
-        if actual is None or shape(actual) != shape(expected): raise ValueError('Свойства созданного объекта отличаются от пакета: ' + obj['path'])
+        if actual is None or metadata_shape(actual) != metadata_shape(expected): raise ValueError('Свойства созданного объекта отличаются от пакета: ' + obj['path'])
     original = child(ET.parse(Path(package['folder']) / 'Configuration.before.xml').getroot(), 'Configuration')
     final = child(ET.parse(catalog.root / 'Configuration.xml').getroot(), 'Configuration')
     refs = lambda node: {(local(c.tag), (c.text or '').strip()) for c in child(node, 'ChildObjects')}

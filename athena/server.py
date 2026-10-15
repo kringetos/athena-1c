@@ -159,7 +159,10 @@ class Workspace:
     def reference_context(self, project, query, limit=5):
         documents = self.document_knowledge.search(project, query, limit)
         git = self.git_projects.search(project, query, limit)
-        return {**documents, 'items': (git['items'][:2] + documents['items'] + git['items'][2:])[:limit]}
+        candidates=git['items'][:2] + documents['items'] + git['items'][2:]
+        return {**documents, 'items':candidates[:limit],
+                'retrieval_modes':{'documents':documents['mode'],'git':git['mode']},
+                'merge_excluded':max(0,len(candidates)-limit)}
 
     def document_project(self, expected=None):
         context=self.agent_tools.context()
@@ -359,8 +362,6 @@ class Workspace:
                 raise ValueError('Подключение к 1С не найдено.')
             if not profile.get('os_auth'):
                 password = password or self.passwords.get(profile['id'],'')
-                if profile.get('user') and not password:
-                    raise ValueError('Введите пароль подключения 1С.')
                 if password:
                     self.passwords[profile['id']] = password
             else:
@@ -439,8 +440,6 @@ class Workspace:
                 profile = next((p for p in self.profiles.all() if p['id'] == self.active_connection), None)
                 if not profile or not self.catalog:
                     raise ValueError('Сначала выгрузите конфигурацию из 1С или откройте её последний снимок.')
-                if profile.get('user') and not profile.get('os_auth') and profile['id'] not in self.passwords and not password:
-                    raise ValueError('Введите пароль подключения ниже. Он будет храниться только в памяти Athena.')
                 if not (self.catalog.root / 'ConfigDumpInfo.xml').is_file():
                     raise ValueError('Нужен ConfigDumpInfo.xml. Выполните полную выгрузку из 1С.')
                 if password and not profile.get('os_auth'):

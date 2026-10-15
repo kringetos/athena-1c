@@ -1,12 +1,14 @@
 """Provider-neutral agent tools. Writes only stage reviewable change sets."""
 import hashlib
 import json
+import re
 import sqlite3
 import threading
 import time
 from collections import Counter
 from contextlib import contextmanager
 from athena.catalog import LABELS, canonical, read_text, text_hash
+from athena.evidence import read_window
 
 
 def string(limit=500): return {'type': 'string', 'minLength': 1, 'maxLength': limit}
@@ -32,12 +34,13 @@ def definitions():
     rows = [
         ('get_configuration', 'Корень конфигурации и полный счётчик объектов каждого вида. Начни с этого инструмента для обзора проекта.', obj({}), False),
         ('list_objects', 'Полный постраничный список объектов конфигурации. child_counts считает собственные реквизиты Attribute, табличные части TabularSection, измерения Dimension и ресурсы Resource напрямую из XML, независимо от наличия BSL. Стандартные и общие реквизиты и поля табличных частей не входят в Attribute. null означает отсутствующий XML. Для полного списка пройди все next_offset.', obj({'kinds': array({'type':'string','enum':list(LABELS)}, 20), **PAGE}), False),
-        ('search', 'Поиск по коду, метаданным, справке, документам и подключённым Git-проектам (scope=git).', obj({'query': string(), 'scope': {'type':'string','enum':['all','code','metadata','platform','documents','git']}, 'source': string(128), 'exact': {'type':'boolean'}, 'limit': integer(1, 30)}, ['query']), False),
-        ('read_module', 'Читать диапазон строк BSL-модуля; возвращает хеш для правки. set_id читает черновик.', obj({'file_id':string(128), 'set_id':string(32), 'start_line':integer(1,1000000), 'line_count':integer(1,300)}, ['file_id']), False),
+        ('search', 'Гибридный поиск по коду, метаданным, справке, документам и Git. exact=true сохраняет точный поиск имени метода. mode показывает фактически выполненный поиск.', obj({'query': string(), 'scope': {'type':'string','enum':['all','code','metadata','platform','documents','git']}, 'source': string(128), 'exact': {'type':'boolean'}, 'limit': integer(1, 30)}, ['query']), False),
+        ('read_module', 'Читать диапазон BSL и хеш для правки. Для продолжения передай next_line и next_column как start_line и start_column. set_id читает черновик.', obj({'file_id':string(128), 'set_id':string(32), 'start_line':integer(1,1000000), 'start_column':integer(0,1000000), 'line_count':integer(1,300)}, ['file_id']), False),
+        ('read_document', 'Дочитать документ или Git-источник проекта по id из поиска; продолжение next_line/next_column.', obj({'document_id':string(4096), 'start_line':integer(1,1000000), 'start_column':integer(0,1000000), 'line_count':integer(1,300)}, ['document_id']), False),
         ('get_object', 'Читать объект метаданных, список модулей и страницу дочерних объектов.', obj({'object_id':string(128), **PAGE}, ['object_id']), False),
         ('get_symbol', 'Читать функцию или процедуру из зафиксированного снимка проекта.', obj({'symbol_id':string(128)}, ['symbol_id']), False),
         ('get_calls', 'Страница входящих или исходящих вызовов; неразрешённые связи отмечены явно.', obj({'symbol_id':string(128), 'direction':{'type':'string','enum':['incoming','outgoing']}, **PAGE}, ['symbol_id','direction']), False),
-        ('read_reference', 'Читать статью синтаксис-помощника указанной версии платформы.', obj({'page_id':string(256), 'source':string(128)}, ['page_id','source']), False),
+        ('read_reference', 'Читать статью синтаксис-помощника; дочитывать next_line/next_column.', obj({'page_id':string(256), 'source':string(128),'start_line':integer(1,1000000),'start_column':integer(0,1000000),'line_count':integer(1,300)}, ['page_id','source']), False),
         ('list_change_sets', 'Список наборов текущего проекта.', obj(PAGE), False),
         ('read_change_set', 'Состав и версия набора без полного текста модулей.', obj({'set_id':string(32)}, ['set_id']), False),
         ('create_change_set', 'Создать отдельный набор предложений для проверки пользователем.', obj({'title':string(120)}, ['title']), True),
@@ -128,7 +131,15 @@ class AgentTools:
                     if old:
                         if old[0]!=fingerprint: raise ValueError('call_id уже использован с другими аргументами.')
                         return json.loads(old[1]) | {'replayed':True}
-                    result=self._dispatch(body['tool'],body['arguments'],context)
+                    if body['tool']=='search':
+                        # Search reads immutable snapshots; it must not block UI state or cancellation.
+                        self.workspace.lock.release()
+                        try:result=self._dispatch(body['tool'],body['arguments'],context)
+                        finally:self.workspace.lock.acquire()
+                        current=self._context()
+                        if not current['ready'] or any(body['context'][k]!=current[k] for k in body['context']):
+                            return {'ok':False,'error':{'code':'stale_context','message':'Проект изменился во время поиска. Повторите запрос.'},'context':current}
+                    else:result=self._dispatch(body['tool'],body['arguments'],context)
                     encoded=json.dumps(result,ensure_ascii=False)
                     if len(encoded.encode())>250000:
                         result={'truncated':True,'preview':encoded[:16000],'message':'Уточните запрос или используйте меньшую страницу.'}
@@ -137,8 +148,10 @@ class AgentTools:
                     # Cache contains bounded tool replies, never credentials. Keep a finite replay window.
                     db.execute('DELETE FROM receipts WHERE id IN (SELECT id FROM receipts ORDER BY created DESC LIMIT -1 OFFSET 1000)')
                     return response
-        except (ValueError,OSError,UnicodeError) as exc:
+        except (ValueError,UnicodeError) as exc:
             return {'ok':False,'error':{'code':'invalid_request','message':str(exc)}}
+        except (OSError,sqlite3.Error,RuntimeError) as exc:
+            return {'ok':False,'error':{'code':'tool_failure','message':'Сбой инструмента ('+type(exc).__name__+'). Повторите запрос или проверьте доступность индекса.'}}
 
     @staticmethod
     def summary(value):
@@ -171,11 +184,38 @@ class AgentTools:
             if scope=='git':return w.git_projects.search(context['project'],a['query'],a.get('limit',5))
             if scope=='documents':return w.reference_context(context['project'],a['query'],a.get('limit',5))
             result=bounded(w.language.search(a['query'],source=a.get('source',''),snapshot=snapshot,scope=scope,exact=a.get('exact',False),limit=a.get('limit',20)))
+            result.update(mode='exact' if a.get('exact') else 'lexical', requested_mode='exact' if a.get('exact') else 'hybrid')
+            if scope in {'code','all'} and not a.get('exact'):
+                found=w.search_functions(a['query'],'hybrid')
+                result.update(mode=found['mode'],warning=found['warning'])
+                result.setdefault('groups',{})['code']=[w.language.code_record(row,snapshot) | {k:row[k] for k in ('match','similarity','rank_score') if k in row} for row in found['results'][:a.get('limit',20)]]
+            # Give the agent actual evidence on the first search, without another model round trip.
+            for hit in result.get('groups',{}).get('code',[])[:3]:
+                with w.knowledge.connect() as db:
+                    row=db.execute('SELECT data FROM symbols WHERE snapshot_id=? AND id=?',(snapshot,hit['id'])).fetchone()
+                if row:
+                    symbol=json.loads(row[0]);lines=symbol.get('code','').splitlines()
+                    terms=[t.casefold() for t in re.findall(r'\w+',a['query']) if len(t)>2]
+                    match=next((i for i,line in enumerate(lines) if any(t in line.casefold() for t in terms)),0)
+                    start=max(0,match-3)
+                    window=read_window('\n'.join(lines),start+1,24,max_chars=1400)
+                    for key in ('start_line','end_line','next_line'):
+                        if window.get(key) is not None:window[key]+=symbol['start_line']-1
+                    window['truncated']=window['partial']
+                    hit['code_excerpt']=window
             if scope=='all':result['documents']=w.reference_context(context['project'],a['query'],min(a.get('limit',5),5))
             return result
+        if tool=='read_document':
+            item=(w.git_projects.read_snapshot(project,a['document_id']) if ':' in a['document_id'] else w.document_knowledge.read(project,a['document_id']))
+            if not item['enabled']:raise ValueError('Документ исключён из контекста проекта.')
+            return {k:item[k] for k in ('id','name','hash')} | read_window(item['content'],a.get('start_line',1),a.get('line_count',100),a.get('start_column',0))
         if tool=='read_reference':
             item=w.language.item('platform',a['page_id'],source=a['source'])
-            return {'item':bounded(item),'truncated':len(json.dumps(item,ensure_ascii=False))>16000}
+            window=read_window(item.pop('body',''),a.get('start_line',1),a.get('line_count',100),a.get('start_column',0))
+            item['section_names']=list(item.pop('sections',{}))
+            item.update(window)
+            item['body']=item.pop('content')
+            return {'item':bounded(item),'truncated':window['partial']}
         if tool=='get_object':
             node=catalog.nodes.get(a['object_id'])
             if not node: raise ValueError('Объект отсутствует в текущем проекте.')
@@ -188,7 +228,14 @@ class AgentTools:
                 if not row: raise ValueError('Метод отсутствует в текущем снимке.')
                 if tool=='get_symbol':
                     item=json.loads(row[0]); item.pop('calls',None)
-                    return {'item':bounded(item),'truncated':len(json.dumps(item,ensure_ascii=False))>16000}
+                    window=read_window(item.pop('code',''),1,1000000)
+                    offset=item['start_line']-1
+                    for key in ('start_line','end_line','next_line'):
+                        if window.get(key) is not None:window[key]+=offset
+                    item['symbol_end_line']=item['end_line']
+                    item.update({k:v for k,v in window.items() if k!='content'},code=window['content'])
+                    return {'item':bounded(item),'truncated':window['partial'],
+                            'continuation':{'tool':'read_module','file_id':item['file_id'],'start_line':window['next_line'],'start_column':window['next_column']} if window['next_line'] else None}
                 incoming=a['direction']=='incoming'; key='target_symbol' if incoming else 'source_symbol'
                 total=db.execute(f'SELECT count(*) FROM calls WHERE snapshot_id=? AND {key}=?',(snapshot,a['symbol_id'])).fetchone()[0]
                 offset=a.get('offset',0); limit=a.get('limit',30)
@@ -204,8 +251,7 @@ class AgentTools:
             if 'set_id' in a: entry=next((e for e in get_set()['entries'] if e.get('file_id')==a['file_id']),None)
             content=entry['content'] if entry else original
             if tool=='read_module':
-                lines=content.splitlines(keepends=True); start=a.get('start_line',1); count=a.get('line_count',100); text=''.join(lines[start-1:start-1+count]); clipped=len(text)>16000
-                return {'file_id':a['file_id'],'path':source.relative_to(catalog.root).as_posix(),'content':text[:16000],'hash':text_hash(content),'base_hash':text_hash(original),'start_line':start,'total_lines':len(lines),'truncated':clipped,'next_line':start if clipped else (start+count if start+count<=len(lines) else None),'draft':bool(entry)}
+                return {'file_id':a['file_id'],'path':source.relative_to(catalog.root).as_posix(),'hash':text_hash(content),'base_hash':text_hash(original),'draft':bool(entry)} | read_window(content,a.get('start_line',1),a.get('line_count',100),a.get('start_column',0))
             if text_hash(content)!=a['expected_hash']: raise ValueError('Хеш текста изменился. Прочитайте модуль заново.')
             if entry and entry['base_hash']!=text_hash(original): raise ValueError('Исходник изменился после создания черновика.')
             for edit in a['edits']:

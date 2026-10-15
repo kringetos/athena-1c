@@ -1,0 +1,97 @@
+--- a/v8api/compositeid.v
++++ b/v8api/compositeid.v
+@@ -15 +15 @@
+-	core83.dll
++	core85.dll
+--- a/v8api/file.v
++++ b/v8api/file.v
+@@ -101 +101 @@
+-    core83.dll
++    core85.dll
+--- a/v8api/picture.v
++++ b/v8api/picture.v
+@@ -30 +30 @@
+-		core83.dll
++		core85.dll
+--- a/v8api/process.v
++++ b/v8api/process.v
+@@ -4 +4 @@
+-#if ver < 8.2.19 | (ver > 8.3.0 & ver < 8.3.4) | ver >= 8.3.20
++#if ver != 8.5.1.1522 | x86 != 1
+@@ -38 +38 @@
+-    core83.dll
++    core85.dll
+@@ -47 +47 @@
+-	v8string load_module_wstring(int_ptr charNameModule, int_ptr charResID)|?load_module_wstring@core@@YA?AV?$BasicString@_S$0A@$0A@Vallocator@std@@@ale@@PBD0@Z|?load_module_wstring@core@@YA?AV?$BasicString@_S$0A@$0A@Vallocator@std@@@ale@@PEBD0@Z
++	v8string load_module_wstring(int_ptr charNameModule, int_ptr charResID, bool=false)|?load_module_wstring@core@@YA?AV?$BasicString@_S$0A@$0A@Vallocator@std@@@ale@@PBD0_N@Z|?load_module_wstring@core@@YA?AV?$BasicString@_S$0A@$0A@Vallocator@std@@@ale@@PEBD0@Z
+--- a/v8api/rect.v
++++ b/v8api/rect.v
+@@ -10 +10 @@
+-	core83.dll
++	core85.dll
+@@ -14 +14 @@
+-	void ctor(int, int, int, int)|??0Rect@core@@QAE@HHHH@Z|??0Rect@core@@QEAA@HHHH@Z
++	void ctor(int, int, int, int)|??0Rect@core@@QAE@JJJJ@Z|??0Rect@core@@QEAA@HHHH@Z
+@@ -27 +27 @@
+-	core83.dll
++	core85.dll
+--- a/v8api/text.v
++++ b/v8api/text.v
+@@ -201 +201 @@
+-    core83.dll
++    core85.dll
+--- a/v8api/textmgr.v
++++ b/v8api/textmgr.v
+@@ -13 +13 @@
+-	core83.dll
++	core85.dll
+@@ -38 +38 @@
+-	core83.dll
++	core85.dll
+@@ -94 +94 @@
+-	core83.dll
++	core85.dll
+--- a/v8api/TypeDomainPattern.v
++++ b/v8api/TypeDomainPattern.v
+@@ -11 +11 @@
+-	core83.dll
++	core85.dll
+--- a/v8api/url.v
++++ b/v8api/url.v
+@@ -15 +15 @@
+-	core83.dll
++	core85.dll
+@@ -53 +53 @@
+-	core83.dll
++	core85.dll
+--- a/v8api/value.v
++++ b/v8api/value.v
+@@ -54 +54 @@
+-	core83.dll
++	core85.dll
+@@ -83 +83 @@
+-	core83.dll
++	core85.dll
+@@ -146 +146 @@
+-	core83.dll
++	core85.dll
+@@ -225 +225 @@
+-	core83.dll
++	core85.dll
+@@ -249 +249 @@
+-	core83.dll
++	core85.dll
+--- a/v8api/window.v
++++ b/v8api/window.v
+@@ -418 +418 @@
+-	wbase83.dll
++	wbase85.dll
+@@ -430 +430 @@
+-	int_ptr calcShadowRect(Rect&)|?calcShadowRect@BaseWindow@wbase@@QAE?AURect@core@@XZ|?calcShadowRect@BaseWindow@wbase@@QEAA?AURect@core@@XZ
++	void calcShadowRect(Rect&out)|?calcShadowRect@BaseWindow@wbase@@UAEXAAURect@core@@@Z|?calcShadowRect@BaseWindow@wbase@@QEAA?AURect@core@@XZ
+@@ -433 +433 @@
+-	int_ptr calcWindowTopRightPos(Rect& out, IWindow&, IWindow&,int,int)|?calcWindowTopRightPos@@YA?AURect@core@@PAVIWindow@wbase@@0HH@Z|?calcWindowTopRightPos@@YA?AURect@core@@PEAVIWindow@wbase@@0HH@Z
++	int_ptr calcWindowTopRightPos(Rect& out, IWindow&, IWindow&,int,int)|?calcWindowTopRightPos@wbase@@YA?AURect@core@@PAVIWindow@1@0HH@Z|?calcWindowTopRightPos@@YA?AURect@core@@PEAVIWindow@wbase@@0HH@Z
+@@ -444 +444 @@
+-	wbase83.dll
++	wbase85.dll

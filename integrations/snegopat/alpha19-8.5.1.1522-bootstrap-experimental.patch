@@ -1,0 +1,69 @@
+--- a/engine/main.as
++++ b/engine/main.as
+@@ -24 +24,5 @@
+-void run() {
++bool athenaRunStarted = false;
++void run() {
++    if (athenaRunStarted) return;
++    athenaRunStarted = true;
++    Print("ATHENA DIAGNOSTIC: run entered");
+@@ -32,0 +37 @@
++    Print("ATHENA DIAGNOSTIC: symbols");
+@@ -33,0 +39 @@
++    Print("ATHENA DIAGNOSTIC: paths");
+@@ -34,0 +41 @@
++    Print("ATHENA DIAGNOSTIC: profile");
+@@ -36 +43,3 @@
+-    initWorkWithMainFrame();
++    Print("ATHENA DIAGNOSTIC: frame");
++    initWorkWithMainFrame();
++    Print("ATHENA DIAGNOSTIC: run completed");
+@@ -41 +50,6 @@
+-int main(array<string>&& cmdArgs) {
++int main(array<string>&& cmdArgs) {
++    Print("ATHENA DIAGNOSTIC: main entered");
++    Print("ATHENA DIAGNOSTIC: main currentProcess null=" + (currentProcess() is null));
++    athenaTimerH = CreateWindowEx(0, "EDIT".cstr, "AthenaBootstrap".cstr, 0, 0, 0, 0, 0, 0, 0, 0, 0);
++    &&athenaTimerWnd = attachWndToFunction(athenaTimerH, WndFunc(athenaTimerBootstrap), array<uint> = { 0x113 });
++    AthenaSetTimer(athenaTimerH, 1, 500, 0);
+@@ -230,0 +245,32 @@
++
++ASWnd&& athenaUIWnd;
++LRESULT athenaUIBootstrap(uint msg, WPARAM w, LPARAM l) {
++    if (msg == 0x8A11) {
++        Print("ATHENA DIAGNOSTIC: UI currentProcess null=" + (currentProcess() is null));
++        run();
++        return 0;
++    }
++    return athenaUIWnd.doDefault();
++}
++
++HWND athenaTimerH;
++ASWnd&& athenaTimerWnd;
++uint athenaTicks = 0;
++LRESULT athenaTimerBootstrap(uint msg, WPARAM w, LPARAM l) {
++    if (msg == 0x113) {
++        athenaTicks++;
++        HWND root = FindWindow("V8TopLevelFrameSDI".cstr, 0);
++        if (root == 0) root = FindWindow("V8NewLocalFrameBaseWnd".cstr, 0);
++        bool ready = currentProcess() !is null;
++        Print("ATHENA DIAGNOSTIC: timer=" + athenaTicks + " currentProcess ready=" + ready + " frame HWND=" + root);
++        if (root != 0 || ready || athenaTicks >= 15) {
++            AthenaKillTimer(athenaTimerH, 1);
++            if (root != 0) {
++                &&athenaUIWnd = attachWndToFunction(root, WndFunc(athenaUIBootstrap), array<uint> = { 0x8A11 });
++                PostMessage(root, 0x8A11, 0, 0);
++            } else if (ready) run();
++        }
++        return 0;
++    }
++    return athenaTimerWnd.doDefault();
++}
+--- /dev/null
++++ b/v8api/athena_bootstrap.v
+@@ -0,0 +1,5 @@
++
++:global
++:dlls user32.dll
++    stdcall int_ptr AthenaSetTimer(HWND, int_ptr, uint, int_ptr)|SetTimer
++    stdcall BOOL AthenaKillTimer(HWND, int_ptr)|KillTimer

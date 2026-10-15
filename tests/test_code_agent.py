@@ -58,11 +58,35 @@ class CodeAgentTests(unittest.TestCase):
         self.assertEqual(self.w.change_sets.list(str(self.w.catalog.root)),[])
         self.assertFalse(any(t['function']['name']=='edit_module' for t in tool_catalog('analyze')))
 
+    def test_amount_formula_question_seeds_model_with_verified_code(self):
+        self.fixture.file_path.write_text('''Процедура ПересчитатьСумму(СтрокаТовара)
+    СтрокаТовара.Сумма = СтрокаТовара.Количество * СтрокаТовара.Цена;
+КонецПроцедуры
+''',encoding='utf-8')
+        self.w.index(self.fixture.root/'project',lambda *args,**kwargs:None)
+        context=self.w.agent_tools.context()
+        request={'goal':'Найди, где в конфигурации рассчитываются суммы документов. Укажи методы, формулы и строки кода.',
+                 'mode':'analyze','context':{k:context[k] for k in ['project','snapshot','workspace_revision']}}
+        def model(*args):
+            self.assertTrue(any(t['function']['name']=='get_symbol' for t in args[4]))
+            self.assertEqual(args[-1],self.agent.config['max_tokens'])
+            evidence='\n'.join(message['content'] for message in args[3] if message['role']=='user')
+            self.assertIn('ПересчитатьСумму',evidence)
+            self.assertIn('СтрокаТовара.Количество * СтрокаТовара.Цена',evidence)
+            return reply(text='Расчёт подтверждён в `ПересчитатьСумму`, строка 2.')
+        with patch('athena.code_agent.model_turn',side_effect=model):
+            job=self.finished(self.agent.start(request))
+        self.assertEqual(job['status'],'ready',job)
+        self.assertEqual(job['provider'],'ollama')
+        self.assertEqual(job['tool_calls'],0)
+        self.assertIn('ПересчитатьСумму',job['answer'])
+        self.assertEqual(job['formula_sources'][0]['line'],2)
+
     def test_all_supported_tools_are_exposed_and_new_objects_track_set_revision(self):
         from athena.agent_tools import definitions
         available={d['function']['name'] for d in definitions()}
         self.assertEqual({t['function']['name'] for t in tool_catalog('propose')},available-{'create_change_set'})
-        self.assertEqual(len(tool_catalog('analyze')),9)
+        self.assertEqual(len(tool_catalog('analyze')),10)
         spec={'kind':'Catalog','name':'ПоставщикиАгента','attributes':[{'name':'ИНН','type':'String','length':12}]}
         entry='object:Catalog:поставщикиагента'
         responses=[reply('create_object',{'spec':spec}),
@@ -75,6 +99,35 @@ class CodeAgentTests(unittest.TestCase):
         self.assertEqual(value['revision'],job['set_revision'])
         self.assertEqual(value['entries'][0]['spec']['synonym'],'Поставщики')
         self.assertFalse((self.w.catalog.root/'Catalogs'/'ПоставщикиАгента.xml').exists())
+
+    def test_minimal_catalog_can_be_prepared_after_repeated_inventory_with_small_context(self):
+        self.w.ai.configure({'provider':'ollama',**DEFAULTS['ollama'],'model':'test-tools','context_chars':18000})
+        spec={'kind':'Catalog','name':'Тест','attributes':[],'sections':[]}
+        original=(self.w.catalog.root/'Configuration.xml').read_bytes()
+        responses=[reply('list_objects',{'kinds':['Catalog']}),
+                   reply('list_objects',{'kinds':['Catalog']}),
+                   reply('list_objects',{'kinds':['Catalog']}),
+                   reply('create_object',{'spec':spec}),reply('validate_changes'),
+                   reply('prepare_changes'),reply(text='Справочник Тест подготовлен в предложениях.')]
+        histories=[]
+        def model(*args):
+            histories.append(copy.deepcopy(args[3]))
+            return responses.pop(0)
+        with patch('athena.code_agent.model_turn',side_effect=model):
+            job=self.finished(self.start(goal='Проверь состав конфигурации и создай справочник Тест без собственных реквизитов'))
+        self.assertEqual(job['status'],'ready',job)
+        self.assertEqual(job['stop_reason'],'model_completed')
+        self.assertTrue(all(s['ok'] for s in job['steps']),job['steps'])
+        self.assertEqual([s['cached'] for s in job['steps'][:3]],[False,True,True])
+        self.assertTrue(any('create_object' in m['content'] and 'Повторные результаты' in m['content']
+                            for m in histories[3] if m['role']=='user'))
+        value=self.w.change_sets.read(job['set_id'])
+        self.assertEqual(value['status'],'prepared')
+        self.assertEqual(len(value['entries']),1)
+        self.assertEqual({k:value['entries'][0]['spec'][k] for k in spec},spec)
+        self.assertTrue(job['validation']['valid'])
+        self.assertEqual((self.w.catalog.root/'Configuration.xml').read_bytes(),original)
+        self.assertFalse((self.w.catalog.root/'Catalogs'/'Тест.xml').exists())
 
     def test_context_trimming_never_skips_metadata_page_items(self):
         for next_offset,total in [(100,125),(None,100)]:
@@ -105,7 +158,33 @@ class CodeAgentTests(unittest.TestCase):
         self.assertGreater(job['history_compactions'],0)
         self.assertEqual(job['memory_facts'],1)
 
-    def test_repeated_reads_use_cache_and_force_an_answer_without_increasing_limits(self):
+    def test_search_code_evidence_survives_chat_history_eviction(self):
+        self.w.ai.configure({'provider':'ollama',**DEFAULTS['ollama'],'model':'test-tools','context_chars':14000})
+        seen=[]
+        def model(*args):
+            seen.append(copy.deepcopy(args[3]))
+            if len(seen)==1:return reply('search',{'query':'СуммаЗаказа','scope':'code'},text='Анализ '*4000)
+            memory=next(json.loads(m['content']) for m in args[3] if m['role']=='user' and 'athena_verified_observations' in m.get('content',''))
+            result=next(r['result'] for r in memory['athena_verified_observations'] if r['tool']=='search')
+            hit=result['groups']['code'][0]
+            self.assertIn('СтрокаТовара.Сумма',hit['code_excerpt']['content'])
+            self.assertTrue(hit['location']['file_id'])
+            return reply(text='Подтверждён расчёт суммы по строкам заказа.')
+        with patch('athena.code_agent.model_turn',side_effect=model):job=self.finished(self.start('analyze'))
+        self.assertEqual(job['status'],'ready',job);self.assertGreater(job['history_compactions'],0)
+
+    def test_slow_search_does_not_freeze_status_cancel_or_project_state(self):
+        entered=threading.Event();release=threading.Event()
+        def slow(*args,**kwargs):entered.set();release.wait(2);return {'groups':{'code':[]}}
+        with patch.object(self.w.language,'search',side_effect=slow),patch('athena.code_agent.model_turn',return_value=reply('search',{'query':'Сумма','scope':'code'})):
+            started=self.start('analyze');self.assertTrue(entered.wait(1))
+            self.assertTrue(self.w.lock.acquire(timeout=.2));self.w.lock.release()
+            self.assertTrue(self.agent.lock.acquire(timeout=.2));self.agent.lock.release()
+            self.assertEqual(self.agent.cancel(started['id'])['status'],'cancelled')
+            release.set();job=self.finished(started)
+        self.assertEqual(job['status'],'cancelled')
+
+    def test_repeated_reads_use_cache_but_keep_tools_until_step_budget(self):
         root=next(n for n in self.w.catalog.nodes.values() if n['kind']=='Configuration')
         histories=[]
         def model(*args):
@@ -116,8 +195,9 @@ class CodeAgentTests(unittest.TestCase):
             with patch('athena.code_agent.model_turn',side_effect=model):job=self.finished(self.start('analyze'))
         self.assertEqual(job['status'],'ready',job)
         self.assertEqual(execute.call_count,1)
-        self.assertEqual(job['rounds'],4)
-        self.assertEqual([s['cached'] for s in job['steps']],[False,True,True])
+        self.assertEqual(job['rounds'],self.agent.config['max_steps'])
+        self.assertEqual([s['cached'] for s in job['steps']],[False]+[True]*(self.agent.config['max_steps']-2))
+        self.assertEqual(job['stop_reason'],'step_budget')
         self.assertIn(root['name'],job['steps'][0]['detail'])
         self.assertIn('athena_verified_observations',json.dumps(histories[-1]))
 
@@ -130,6 +210,12 @@ class CodeAgentTests(unittest.TestCase):
         results=[]
         def model(*args):
             results.extend(json.loads(m['content']) for m in args[3][-1:] if m['role']=='tool' and m.get('name')=='read_module')
+            for message in args[3]:
+                if message['role']=='user' and 'athena_verified_observations' in message['content']:
+                    for record in json.loads(message['content'])['athena_verified_observations']:
+                        if record['tool']=='read_module':
+                            result=record['result']
+                            results.append({'result':{**result,'content':result.get('excerpt','')+'\n'.join(f['content'] for f in result.get('fragments',[]))}})
             return responses.pop(0)
         with patch('athena.code_agent.model_turn',side_effect=model):job=self.finished(self.start())
         self.assertEqual(job['status'],'ready',job)
@@ -196,7 +282,8 @@ class CodeAgentTests(unittest.TestCase):
         before=read_text(self.fixture.file_path)
         responses=[reply('edit_module',{'file_id':self.fixture.file_id,'expected_hash':text_hash(before),'edits':[{'old_text':before.splitlines()[0],'new_text':'Процедура Незавершенная('}]}),reply(text='Готово')]
         with patch('athena.code_agent.model_turn',side_effect=responses):job=self.finished(self.start())
-        self.assertEqual(job['status'],'ready');self.assertFalse(job['validation']['valid']);self.assertTrue(job['validation']['errors'])
+        self.assertEqual(job['status'],'stopped');self.assertEqual(job['completion'],'invalid_changes')
+        self.assertFalse(job['validation']['valid']);self.assertTrue(job['validation']['errors'])
 
     def test_settings_validation_and_interrupted_runs(self):
         with self.assertRaises(ValueError):settings({**self.agent.config,'max_steps':True})

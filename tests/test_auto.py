@@ -113,9 +113,14 @@ class AutoTests(unittest.TestCase):
         self.assertNotIn('new-session-secret',str(response))
         self.assertNotIn('new-session-secret',self.workspace.profiles.path.read_text(encoding='utf-8'))
 
-    def test_enable_requires_credentials_and_disable_cancels_only_auto_job(self):
+    def test_enable_without_password_and_disable_cancels_only_auto_job(self):
         self.workspace.passwords.clear()
-        with self.assertRaises(ValueError): self.workspace.configure_auto({'enabled':True,'interval':60})
+        with patch.object(self.workspace,'watch'):
+            response=self.workspace.configure_auto({'enabled':True,'interval':60})
+        self.assertTrue(response['enabled'])
+        with patch('athena.server.configuration_changed',return_value=False) as check:
+            self.workspace.auto_tick()
+        self.assertEqual(check.call_args.args[1],'')
         self.workspace.job={'status':'running','operation':'export','cancellable':True}
         self.workspace.configure_auto({'enabled':False,'interval':60})
         self.assertFalse(self.workspace.cancel_export.is_set())

@@ -84,3 +84,44 @@ class SetTests(unittest.TestCase):
         shutil.copytree(stage,self.root/'exported')
         (self.root/'exported'/self.value['entries'][0]['path']).write_text('different',encoding='utf-8')
         with self.assertRaises(ValueError): verify_set(Catalog(self.root/'exported').scan(),package)
+
+    def attribute_export(self):
+        spec={'kind':'Catalog','name':'ПроверкаПлатформы','attributes':[{'name':'Цена','type':'Number','digits':15,'scale':2}]}
+        self.value=self.store.add(self.value['id'],'demo',self.value['revision'],self.catalog,{'kind':'object','spec':spec})
+        package=self.prepare()['set']['package'];output=self.root/'exported'
+        shutil.copytree(Path(package['folder'])/'files',output)
+        path=output/'Catalogs/ПроверкаПлатформы.xml';tree=ET.parse(path)
+        obj=child(tree.getroot(),'Catalog');attribute=child(child(obj,'ChildObjects'),'Attribute');props=child(attribute,'Properties')
+        namespace=props.tag.rsplit('}',1)[0]+'}'
+        ET.SubElement(props,namespace+'FillFromFillingValue').text='false'
+        ET.SubElement(props,namespace+'FillValue',{'{http://www.w3.org/2001/XMLSchema-instance}nil':'true'})
+        ET.SubElement(props,namespace+'Use').text='ForItem'
+        tree.write(path,encoding='utf-8')
+        return package,output,path,tree,props
+
+    def test_readback_accepts_1c_added_attribute_defaults_for_set_and_object(self):
+        from athena.objects import verify_object
+        package,output,path,tree,props=self.attribute_export()
+        catalog=Catalog(output).scan();verify_set(catalog,package)
+        draft=json.loads((Path(package['objects'][0]['folder'])/'manifest.json').read_text(encoding='utf-8'))
+        verify_object(catalog,draft)
+
+    def test_normalized_readback_still_rejects_real_property_type_and_identity_changes(self):
+        from athena.objects import verify_object
+        package,output,path,tree,props=self.attribute_export()
+        original=path.read_bytes()
+        draft=json.loads((Path(package['objects'][0]['folder'])/'manifest.json').read_text(encoding='utf-8'))
+        for key,value in [('FillFromFillingValue','true'),('Use','ForFolder'),('FillValue','100'),
+                          ('Digits','12'),('FractionDigits','0'),('Name','ДругаяЦена'),('uuid','other'),('UnknownProperty','false')]:
+            with self.subTest(property=key):
+                path.write_bytes(original);changed=ET.parse(path);obj=child(changed.getroot(),'Catalog')
+                attribute=child(child(obj,'ChildObjects'),'Attribute');attribute_props=child(attribute,'Properties')
+                if key=='uuid':attribute.set('uuid',value)
+                elif key=='UnknownProperty':ET.SubElement(attribute_props,props.tag.rsplit('}',1)[0]+'}'+key).text=value
+                else:
+                    node=next(n for n in attribute_props.iter() if local(n.tag)==key)
+                    node.text=value
+                    if key=='FillValue':node.attrib.clear()
+                changed.write(path,encoding='utf-8');catalog=Catalog(output).scan()
+                with self.assertRaises(ValueError):verify_set(catalog,package)
+                with self.assertRaises(ValueError):verify_object(catalog,draft)

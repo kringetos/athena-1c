@@ -1,0 +1,9 @@
+{
+  "version": "8.5.1.1522",
+  "architecture": "x86",
+  "scope": "Named exports only; does not validate native ABI or vtables",
+  "guards": [],
+  "checked": 200,
+  "found": 200,
+  "failures": []
+}

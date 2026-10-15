@@ -1,0 +1,64 @@
+{
+  "version": "8.5.1.1522",
+  "architecture": "x86",
+  "scope": "Named exports only; does not validate native ABI or vtables",
+  "guards": [
+    {
+      "file": "process.v",
+      "line": 5,
+      "message": "Unsupported version of 1C - Эта версия 1С не поддерживается!"
+    }
+  ],
+  "checked": 200,
+  "found": 196,
+  "failures": [
+    {
+      "file": "process.v",
+      "line": 47,
+      "libraries": [
+        "core83.dll"
+      ],
+      "mapped_libraries": [
+        "core85.dll"
+      ],
+      "symbol": "?load_module_wstring@core@@YA?AV?$BasicString@_S$0A@$0A@Vallocator@std@@@ale@@PBD0@Z",
+      "status": "missing_symbol"
+    },
+    {
+      "file": "rect.v",
+      "line": 14,
+      "libraries": [
+        "core83.dll"
+      ],
+      "mapped_libraries": [
+        "core85.dll"
+      ],
+      "symbol": "??0Rect@core@@QAE@HHHH@Z",
+      "status": "missing_symbol"
+    },
+    {
+      "file": "window.v",
+      "line": 430,
+      "libraries": [
+        "wbase83.dll"
+      ],
+      "mapped_libraries": [
+        "wbase85.dll"
+      ],
+      "symbol": "?calcShadowRect@BaseWindow@wbase@@QAE?AURect@core@@XZ",
+      "status": "missing_symbol"
+    },
+    {
+      "file": "window.v",
+      "line": 433,
+      "libraries": [
+        "wbase83.dll"
+      ],
+      "mapped_libraries": [
+        "wbase85.dll"
+      ],
+      "symbol": "?calcWindowTopRightPos@@YA?AURect@core@@PAVIWindow@wbase@@0HH@Z",
+      "status": "missing_symbol"
+    }
+  ]
+}
