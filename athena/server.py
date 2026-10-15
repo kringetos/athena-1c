@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import secrets
 import os
 import socket
@@ -126,6 +127,46 @@ class Workspace:
         self.semantic_job = {'status':'idle'}
         self.semantic_worker = None
 
+        from athena.document_knowledge import DocumentKnowledge
+        self.document_knowledge = DocumentKnowledge(self, STATE.parent)
+        from athena.accounts import Accounts
+        self.accounts = Accounts(STATE.parent)
+        from athena.git_projects import GitProjects
+        self.git_projects = GitProjects(STATE.parent)
+
+    def undo_user_changes(self,data):
+        from athena.accounts import ACTOR, privileged
+        if not privileged():raise PermissionError('Отменять чужие изменения может главный программист или администратор.')
+        project,catalog,_=self.set_context()
+        with self.change_sets.lock:
+            value=self.change_sets.read(data.get('id'))
+            if value['project']!=project or value['revision']!=data.get('revision'):raise ValueError('Проект или версия набора изменились.')
+            if value['status'] in {'submitting','needs_review'}:raise ValueError('Сначала завершите и проверьте текущую загрузку в 1С.')
+            if value['status']=='applied':
+                entries=[e for e in value['entries'] if e['enabled']]
+                if not entries or any(e['kind']!='module' or 'before_content' not in e for e in entries):raise ValueError('Автоматический обратный пакет доступен для новых изменений BSL. Созданные объекты и старые наборы требуют ручного восстановления в 1С.')
+                for e in entries:
+                    source=catalog.files.get(e['file_id'])
+                    if not source or text_hash(read_text(source))!=text_hash(e['content']):raise ValueError('После загрузки код уже изменился. Автоматическая отмена затронула бы более поздние правки.')
+                reverse=self.change_sets.create(project,'Отмена: '+value['title'][:105])
+                for e in entries:reverse=self.change_sets.add(reverse['id'],project,reverse['revision'],catalog,{'kind':'module','file_id':e['file_id'],'base_hash':text_hash(e['content']),'content':e['before_content']})
+                reverse['undo_of']=value['id'];self.change_sets.write(reverse)
+                return {'message':'Обратный набор создан. Проверьте его в Правках и отдельно подтвердите загрузку в 1С.','set_id':reverse['id']}
+            if value.get('revoked'):raise ValueError('Набор уже отменён.')
+            value.update(status='archived',revoked=True,package=None,revision=value['revision']+1)
+            value['history'].append({'revision':value['revision'],'action':'revoked','by':ACTOR.get()['login'],'time':time.time()});self.change_sets.write(value)
+            return {'message':'Предложения отменены. Подготовленный пакет больше нельзя загрузить.'}
+    def reference_context(self, project, query, limit=5):
+        documents = self.document_knowledge.search(project, query, limit)
+        git = self.git_projects.search(project, query, limit)
+        return {**documents, 'items': (git['items'][:2] + documents['items'] + git['items'][2:])[:limit]}
+
+    def document_project(self, expected=None):
+        context=self.agent_tools.context()
+        if not context['ready']:raise ValueError('Откройте проект и дождитесь индексации.')
+        if expected is not None and expected!=context['project']:raise ValueError('Проект изменился. Повторите загрузку для текущего проекта.')
+        return context['project']
+
     def make_embedder(self, config):
         if config['device']=='gpu' and runtime_ready(STATE.parent):return ManagedGPU(STATE.parent,config)
         return LocalEmbeddings(STATE.parent / 'models',config)
@@ -168,6 +209,7 @@ class Workspace:
                 if enabled: cancel.clear()
                 else: cancel.set()
         if enabled:self.schedule_embeddings()
+        self.document_knowledge.schedule()
         return self.knowledge_status()
 
     def schedule_embeddings(self):
@@ -226,7 +268,10 @@ class Workspace:
         structure = structure_request(question)
         kinds = structure['kinds'] if structure else inventory_request(question)
         if kinds is None:
-            return self.search_functions(question)
+            result = self.search_functions(question)
+            context = self.agent_tools.context()
+            result['references'] = self.reference_context(context['project'], question)['items']
+            return result
         with self.lock:
             snapshot = self.knowledge_snapshot
         if not snapshot:
@@ -268,6 +313,8 @@ class Workspace:
                 raise ValueError('Откройте проект и дождитесь завершения текущей операции.')
             profile=next((p for p in self.profiles.all() if p['id']==self.active_connection),None)
             draft,preview=prepare_object(self.catalog,data,profile,self.profiles.directory)
+            from athena.accounts import ACTOR
+            draft['owner']=(ACTOR.get() or {}).get('id')
             self.drafts[draft['id']]=draft
             return preview
 
@@ -279,6 +326,8 @@ class Workspace:
             if not profile or not self.catalog:
                 raise ValueError('Загрузка доступна для проекта, связанного с подключением 1С.')
             draft, preview = prepare(self.catalog, data.get('file_id'), data.get('content'), data.get('base_hash'), profile, self.profiles.directory)
+            from athena.accounts import ACTOR
+            draft['owner']=(ACTOR.get() or {}).get('id')
             self.drafts[draft['id']] = draft
             return preview
 
@@ -298,6 +347,9 @@ class Workspace:
                 raise ValueError('Проект обновился после подготовки. Сравните черновик с новой версией.')
             batch = draft.get('operation') == 'change_set'
             if batch: self.change_sets.check_package(draft, self.catalog)
+            else:
+                from athena.accounts import require_owner
+                require_owner(draft.get('owner'))
             creating=draft.get('operation') in {'create_object', 'change_set'}
             base_hash=text_hash(read_text(self.catalog.root/'Configuration.xml')) if creating else self.catalog.file(draft['file_id'])['hash']
             if base_hash != draft['base_hash']:
@@ -451,6 +503,8 @@ class Workspace:
             self.auto.update(last_check=time.time(), phase='Ошибка проверки', error=message)
 
     def close(self):
+        self.git_projects.close()
+        self.document_knowledge.close()
         self.documentation.close()
         self.code_agent.close()
         self.ai.close()
@@ -594,18 +648,36 @@ def handler(workspace):
             self.send_header('Content-Type', 'application/json; charset=utf-8')
             self.send_header('Content-Length', str(len(data)))
             self.send_header('Cache-Control', 'no-store')
+            if getattr(self,'cookie_update',None):self.send_header('Set-Cookie',self.cookie_update)
             self.end_headers()
             self.wfile.write(data)
 
         def authorized(self):
-            return secrets.compare_digest(self.headers.get('X-Athena-Token', ''), workspace.token)
+            from athena.accounts import ACTOR
+            user=workspace.accounts.session(self.session_cookie())
+            if user:user.update(project=workspace.active_connection or (str(workspace.catalog.root) if workspace.catalog else None),_accounts=workspace.accounts)
+            ACTOR.set(user)
+            csrf=secrets.compare_digest(self.headers.get('X-Athena-Token', ''), workspace.token)
+            return csrf and (user is not None or self.path=='/api/auth/login')
+
+        def session_cookie(self):
+            from http.cookies import SimpleCookie, CookieError
+            try:
+                cookie=SimpleCookie(self.headers.get('Cookie',''));return cookie['athena_session'].value if 'athena_session' in cookie else ''
+            except CookieError:return ''
 
         def do_GET(self):
             route = urlparse(self.path)
             if route.path.startswith('/api/'):
                 if not self.authorized():
-                    return self.respond({'error': 'Нет доступа.'}, 403)
+                    return self.respond({'error': 'Требуется вход в аккаунт.'}, 403)
                 try:
+                    if route.path == '/api/auth/me':
+                        from athena.accounts import ACTOR
+                        return self.respond({k:v for k,v in ACTOR.get().items() if k in {'id','login','role'}})
+                    if route.path == '/api/auth/users':return self.respond({'users':workspace.accounts.users()})
+                    if route.path == '/api/review/requests':return self.respond(workspace.accounts.journal(parse_qs(route.query).get('offset',[0])[0]))
+                    if route.path == '/api/review/request':return self.respond(workspace.accounts.request(parse_qs(route.query).get('id',[''])[0]))
                     if route.path == '/api/onboarding':
                         return self.respond(workspace.onboarding_status())
                     if route.path == '/api/gpu-install':
@@ -629,6 +701,12 @@ def handler(workspace):
                         return self.respond({'sets': workspace.change_sets.list(project)})
                     if route.path == '/api/documents':
                         return self.respond(workspace.documentation.listing())
+                    if route.path == '/api/document-knowledge':
+                        return self.respond(workspace.document_knowledge.listing(workspace.document_project()))
+                    if route.path == '/api/git-projects':
+                        return self.respond(workspace.git_projects.listing(workspace.document_project()))
+                    if route.path == '/api/document-knowledge/read':
+                        return self.respond(workspace.document_knowledge.read(workspace.document_project(),parse_qs(route.query).get('id',[''])[0]))
                     if route.path == '/api/documents/job':
                         return self.respond(workspace.documentation.read(parse_qs(route.query).get('id',[''])[0]))
                     if route.path == '/api/agent/tools':
@@ -667,6 +745,8 @@ def handler(workspace):
                             raise ValueError('Сначала откройте проект.')
                         return self.respond(workspace.catalog.file(parse_qs(route.query).get('id', [''])[0]))
                     return self.respond({'error': 'Неизвестный адрес.'}, 404)
+                except PermissionError as exc:
+                    return self.respond({'error':str(exc)},403)
                 except (ValueError, OSError, UnicodeError) as exc:
                     return self.respond({'error': str(exc)}, 400)
             allowed = {'/': ('index.html', 'text/html'), '/setup': ('setup.html','text/html'), '/setup.js':('setup.js','text/javascript'), '/setup.css':('setup.css','text/css'), '/app.js': ('app.js', 'text/javascript'), '/completion.js':('completion.js','text/javascript'), '/style.css': ('style.css', 'text/css'), '/export.css': ('export.css', 'text/css')}
@@ -674,11 +754,18 @@ def handler(workspace):
             allowed['/agent-tools'] = ('agent-tools.html', 'text/html')
             allowed['/agent-tools.js'] = ('agent-tools.js', 'text/javascript')
             allowed['/documentation.js'] = ('documentation.js', 'text/javascript')
+            allowed['/login'] = ('login.html','text/html')
+            allowed['/accounts.js'] = ('accounts.js','text/javascript')
+            allowed['/document-knowledge.js'] = ('document-knowledge.js', 'text/javascript')
+            allowed['/git-projects.js'] = ('git-projects.js', 'text/javascript')
             allowed['/code-agent.js'] = ('code-agent.js', 'text/javascript')
             if route.path not in allowed:
                 return self.respond({'error': 'Не найдено.'}, 404)
             name, mime = allowed[route.path]
-            data = (WEB / name).read_text(encoding='utf-8').replace('__ATHENA_TOKEN__', workspace.token).encode('utf-8')
+            if route.path in {'/','/setup','/agent-tools'} and not workspace.accounts.session(self.session_cookie()):
+                self.send_response(302);self.send_header('Location','/login');self.end_headers();return
+            user=workspace.accounts.session(self.session_cookie()) or {}
+            data = (WEB / name).read_text(encoding='utf-8').replace('__ATHENA_TOKEN__', workspace.token).replace('__ATHENA_USER_ID__',user.get('id','')).encode('utf-8')
             self.send_response(200)
             self.send_header('Content-Type', mime + '; charset=utf-8')
             self.send_header('Content-Length', str(len(data)))
@@ -693,7 +780,7 @@ def handler(workspace):
                 size = int(self.headers.get('Content-Length', 0))
                 if size < 0 or size > 4_000_000:
                     if not authorized:
-                        return self.respond({'error': 'Нет доступа.'}, 403)
+                        return self.respond({'error': 'Требуется вход в аккаунт.'}, 403)
                     raise ValueError('Слишком большой запрос.')
                 # Closing with unread request bytes can reset the TCP connection on
                 # Windows before the client receives the 403. Drain only a bounded
@@ -704,12 +791,30 @@ def handler(workspace):
                         self.rfile.read(size)
                     except OSError:
                         pass
-                    return self.respond({'error': 'Нет доступа.'}, 403)
+                    return self.respond({'error': 'Требуется вход в аккаунт.'}, 403)
                 body = json.loads(self.rfile.read(size) or b'{}')
                 if not isinstance(body, dict):
                     raise ValueError('Ожидается объект параметров.')
+                if self.path == '/api/auth/login':
+                    session=workspace.accounts.login(body,self.client_address[0]);self.cookie_update='athena_session='+session+'; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200'
+                    return self.respond({'ok':True})
+                if self.path == '/api/auth/logout':
+                    workspace.accounts.logout(self.session_cookie());self.cookie_update='athena_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0'
+                    return self.respond({'ok':True})
+                if self.path == '/api/auth/users':return self.respond(workspace.accounts.create(body),201)
+                if self.path == '/api/review/correct':return self.respond(workspace.accounts.correct(body,workspace.document_knowledge))
+                if self.path == '/api/review/undo':return self.respond(workspace.undo_user_changes(body))
                 if self.path == '/api/onboarding':
                     return self.respond(workspace.complete_onboarding(body))
+                if self.path in {'/api/git-projects/connect', '/api/git-projects/action'}:
+                    if not body.get('project'): raise ValueError('Укажите текущий проект.')
+                    project = workspace.document_project(body['project'])
+                    if body.get('action') == 'import-current':
+                        with workspace.lock:
+                            if project != workspace.agent_tools._context()['project']: raise ValueError('Проект изменился.')
+                            return self.respond(workspace.git_projects.import_project(project, body, workspace.catalog))
+                    operation = workspace.git_projects.connect if self.path.endswith('/connect') else workspace.git_projects.action
+                    return self.respond(operation(project, body))
                 if self.path == '/api/completion/settings':
                     return self.respond(workspace.completion.configure(body))
                 if self.path == '/api/completion':
@@ -721,10 +826,30 @@ def handler(workspace):
                     return self.respond(workspace.agent_tools.call(body))
                 if self.path == '/api/documents/start':
                     return self.respond(workspace.documentation.start(body),202)
+                if self.path in {'/api/document-knowledge/upload','/api/document-knowledge/configure'}:
+                    if not body.get('project'):raise ValueError('Укажите текущий проект.')
+                    with workspace.lock:
+                        context=workspace.agent_tools._context()
+                        if not context['ready'] or body['project']!=context['project']:raise ValueError('Проект изменился или занят.')
+                        operation=workspace.document_knowledge.upload if self.path.endswith('/upload') else workspace.document_knowledge.configure
+                        result=operation(context['project'],body)
+                    return self.respond(result)
                 if self.path == '/api/documents/cancel':
                     return self.respond(workspace.documentation.cancel(body.get('id')))
                 if self.path == '/api/documents/save':
                     return self.respond(workspace.documentation.save(body))
+                if self.path == '/api/documents/pdf':
+                    from urllib.parse import quote
+                    pdf, title = workspace.documentation.pdf(body)
+                    filename = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', title).strip('. ') or 'Documentation'
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'application/pdf')
+                    self.send_header('Content-Disposition', "attachment; filename=\"documentation.pdf\"; filename*=UTF-8''" + quote(filename + '.pdf', safe=''))
+                    self.send_header('Content-Length', str(len(pdf)))
+                    self.send_header('Cache-Control', 'no-store')
+                    self.end_headers()
+                    self.wfile.write(pdf)
+                    return
                 if self.path == '/api/agent/start':
                     return self.respond(workspace.code_agent.start(body),202)
                 if self.path == '/api/agent/cancel':
@@ -786,6 +911,8 @@ def handler(workspace):
                     workspace.load(path.strip())
                     return self.respond({'status': 'running'}, 202)
                 return self.respond({'error': 'Неизвестный адрес.'}, 404)
+            except PermissionError as exc:
+                self.respond({'error':str(exc)},403)
             except (ValueError, OSError) as exc:
                 self.respond({'error': str(exc)}, 400)
     return Handler
@@ -807,7 +934,7 @@ def main():
             try:
                 with urlopen(url, timeout=2) as response:
                     existing = response.read(8192).decode('utf-8', errors='replace')
-                if any(title in existing for title in ('<title>Athena · Обозреватель 1С</title>', '<title>Athena · IDE для 1С</title>')):
+                if any(title in existing for title in ('<title>Athena · Вход</title>', '<title>Athena · Обозреватель 1С</title>', '<title>Athena · IDE для 1С</title>')):
                     webbrowser.open(url)
                     print(f'Athena уже запущена: {url}', flush=True)
                     return

@@ -59,6 +59,21 @@ class NoRedirect(HTTPRedirectHandler):
 
 
 def request_json(url,body=None,key='',timeout=120):
+    from athena.accounts import ACTOR
+    actor=ACTOR.get();result=None;error=''
+    try:
+        result=_request_json(url,body,key,timeout);return result
+    except Exception as exc:
+        error=str(exc).replace(key,'••••') if key else str(exc);raise
+    finally:
+        if actor and body is not None:
+            def clean(value):
+                if isinstance(value,dict):return {k:('••••' if k.lower() in {'api_key','apikey','authorization','password','token'} else clean(v)) for k,v in value.items()}
+                if isinstance(value,list):return [clean(v) for v in value]
+                return value.replace(key,'••••') if key and isinstance(value,str) else value
+            actor['_accounts'].record(urlparse(url)._replace(query='',fragment='').geturl(),clean(body),clean(result),error)
+
+def _request_json(url,body=None,key='',timeout=120):
     headers={'Accept':'application/json'}
     if key:headers['Authorization']='Bearer '+key
     data=None if body is None else json.dumps(body,ensure_ascii=False).encode('utf-8')
@@ -102,7 +117,15 @@ def generate(provider,settings,key,messages,max_tokens=1600):
 
 
 def context_pack(store,search,budget):
-    sources=[];used=set();candidates=[(r,'search') for r in search['results'][:6]]
+    sources=[];used=set()
+    for item in search.get('references',[])[:5]:
+        entry=f"[S{len(sources)+1}] {item['name']}:{item['start_line']}-{item['end_line']}\nВерсия файла: {item['document_hash']}\n{item['content']}"
+        if len(entry)>budget//2: continue
+        sources.append({**item,'label':f'S{len(sources)+1}','context':entry,'code':item['content'],
+                        'reason':item.get('source','document'),'type':'reference','path':item.get('path',item['name']),
+                        'file_id':'','file_hash':item['document_hash'],'owner_name':item['name'],'module_name':item['name']})
+        budget-=len(entry)
+    candidates=[(r,'search') for r in search['results'][:6]]
     neighbors=[]
     for result,reason in candidates:
         symbol=store.symbol(search['snapshot'],result['id'])
@@ -252,18 +275,23 @@ class AI:
             finally:
                 with self.lock:
                     if self.active==job_id:self.active=None
-        threading.Thread(target=run,daemon=True).start()
+        from athena.accounts import ACTOR, thread
+        job['owner']=(ACTOR.get() or {}).get('id');thread(run).start()
         return {'id':job_id,'status':'running'}
 
     def job(self,job_id):
         with self.lock:
             if job_id not in self.jobs:raise ValueError('Запрос AI не найден.')
+            from athena.accounts import require_owner
+            require_owner(self.jobs[job_id].get('owner'))
             return {k:v for k,v in self.jobs[job_id].items() if not k.startswith('_')}
 
     def cancel(self,job_id):
         with self.lock:
             job=self.jobs.get(job_id)
             if not job:raise ValueError('Запрос AI не найден.')
+            from athena.accounts import require_owner
+            require_owner(job.get('owner'))
             if job['status']=='running':
                 job['_cancel'].set();job.update(status='cancelled',phase='Запрос отменён')
             # Keep active until transport terminates, to prevent accumulating model requests.

@@ -41,18 +41,23 @@ class ChangeSets:
             for path in self.directory.glob('*/manifest.json'):
                 try:
                     value = self.read(path.parent.name)
-                    if value['project'] == project: values.append({key: value[key] for key in ['id', 'title', 'status', 'revision', 'updated']} | {'count': sum(e['enabled'] for e in value['entries'])})
+                    if value['project'] == project: values.append({key: value[key] for key in ['id', 'title', 'status', 'revision', 'updated']} | {'count': sum(e['enabled'] for e in value['entries']), 'owner_login':value.get('owner_login'), 'owner':value.get('owner'), 'revoked':value.get('revoked',False)})
                 except (ValueError, KeyError): continue
             return sorted(values, key=lambda value: -value['updated'])
 
     def create(self, project, title):
         if not isinstance(title, str) or not title.strip() or len(title) > 120: raise ValueError('Введите название набора до 120 символов.')
         value = {'id': uuid.uuid4().hex, 'title': title.strip(), 'project': project, 'status': 'draft', 'revision': 1, 'entries': [], 'history': [], 'package': None}
+        from athena.accounts import ACTOR
+        actor=ACTOR.get() or {};value.update(owner=actor.get('id'),owner_login=actor.get('login'))
         with self.lock: self.write(value)
         return value
 
     def editable(self, identity, project, revision):
         value = self.read(identity)
+        from athena.accounts import require_owner
+        require_owner(value.get('owner'))
+        if value.get('revoked'):raise ValueError('Набор отменён главным программистом.')
         if type(revision) is not int: raise ValueError('Укажите версию набора.')
         if value['project'] != project: raise ValueError('Набор относится к другому проекту.')
         if value['revision'] != revision: raise ValueError('Набор изменён в другом окне. Обновите список.')
@@ -76,6 +81,7 @@ class ChangeSets:
             if not isinstance(base, str) or len(base) != 64: raise ValueError('Укажите исходный хеш модуля.')
             path = source.relative_to(catalog.root).as_posix()
             record = {'id': 'module:' + file_id, 'kind': 'module', 'file_id': file_id, 'path': path, 'content': canonical(content), 'base_hash': base, 'enabled': True}
+            record['before_content']=canonical(read_text(source))
         elif entry.get('kind') == 'object':
             spec = normalize_spec(catalog, entry.get('spec', {}))
             record = {'id': 'object:' + spec['kind'] + ':' + spec['name'].casefold(), 'kind': 'object', 'spec': spec, 'path': spec['kind'] + '.' + spec['name'], 'base_hash': text_hash(read_text(catalog.root / 'Configuration.xml')), 'enabled': True}
@@ -160,6 +166,9 @@ class ChangeSets:
         if type(restore) is not bool: raise ValueError('Некорректный режим восстановления.')
         with self.lock:
             value = self.read(identity)
+            from athena.accounts import require_owner
+            require_owner(value.get('owner'))
+            if restore and value.get('revoked'):raise ValueError('Отменённый набор нельзя восстановить; создайте новый.')
             if value['project'] != project or type(revision) is not int or value['revision'] != revision: raise ValueError('Проект или версия набора изменились.')
             if value['status'] in {'submitting', 'needs_review'}: raise ValueError('Сначала проверьте результат загрузки в 1С.')
             if restore:
@@ -186,6 +195,8 @@ class ChangeSets:
 
     def check_package(self, package, catalog):
         value = self.read(package['set_id'])
+        from athena.accounts import require_owner
+        require_owner(value.get('owner'))
         self.folder(package['id'])
         expected = self.folder(package['set_id']) / 'packages' / package['id']
         if Path(package['folder']).resolve() != expected or expected.resolve() != expected: raise ValueError('Недопустимый путь пакета.')

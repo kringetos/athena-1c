@@ -27,6 +27,7 @@ class ServerTests(unittest.TestCase):
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         self.url = f'http://127.0.0.1:{self.server.server_port}'
+        self.cookie='athena_session='+self.workspace.accounts.login({'login':'admin','password':'admin'})
 
     def tearDown(self):
         self.workspace.close()
@@ -37,7 +38,7 @@ class ServerTests(unittest.TestCase):
         self.temp.cleanup()
 
     def request(self, path, body=None, authenticated=True):
-        headers = {'X-Athena-Token': self.workspace.token} if authenticated else {}
+        headers = {'X-Athena-Token': self.workspace.token,'Cookie':self.cookie} if authenticated else {}
         data = json.dumps(body).encode() if body is not None else None
         with urlopen(Request(self.url + path, data=data, headers=headers), timeout=5) as response:
             return json.loads(response.read())
@@ -57,9 +58,20 @@ class ServerTests(unittest.TestCase):
                 self.request(route,{},authenticated=False)
             self.assertEqual(denied.exception.code,403)
 
+    def test_git_routes_are_authenticated_and_require_current_project(self):
+        for path,body in [('/api/git-projects',None),('/api/git-projects/connect',{}),('/api/git-projects/action',{})]:
+            with self.assertRaises(HTTPError) as denied:self.request(path,body,authenticated=False)
+            self.assertEqual(denied.exception.code,403)
+        self.workspace.index(Path(__file__).resolve().parents[1]/'examples'/'demo',lambda *a,**k:None)
+        self.assertEqual(self.request('/api/git-projects')['repositories'],[])
+        with patch.object(self.workspace.git_projects,'connect') as connect:
+            with self.assertRaises(HTTPError) as stale:self.request('/api/git-projects/connect',{'project':'other','url':'https://host/repo'})
+            self.assertEqual(stale.exception.code,400);connect.assert_not_called()
+        with urlopen(self.url+'/git-projects.js') as response:self.assertIn('git-connect',response.read().decode())
+
     def test_documentation_routes_require_token_and_keep_documents_separate(self):
         from athena.ai import DEFAULTS
-        for path,body in [('/api/documents',None),('/api/documents/job?id=x',None),('/api/documents/start',{}),('/api/documents/cancel',{}),('/api/documents/save',{})]:
+        for path,body in [('/api/documents',None),('/api/documents/job?id=x',None),('/api/documents/start',{}),('/api/documents/cancel',{}),('/api/documents/save',{}),('/api/documents/pdf',{})]:
             with self.assertRaises(HTTPError) as denied:self.request(path,body,authenticated=False)
             self.assertEqual(denied.exception.code,403)
         self.workspace.index(Path(__file__).resolve().parents[1]/'examples'/'demo',lambda *a,**k:None)
@@ -75,6 +87,15 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(self.request('/api/documents')['documents'][0]['id'],job['id'])
         saved=self.request('/api/documents/save',{'id':job['id'],'content':'# Новая редакция'})
         self.assertEqual(saved['content'],'# Новая редакция')
+        request=Request(self.url+'/api/documents/pdf',data=json.dumps({'id':job['id'],'content':'# Только для PDF'}).encode(),
+                        headers={'X-Athena-Token':self.workspace.token,'Cookie':self.cookie,'Content-Type':'application/json'})
+        with urlopen(request,timeout=5) as response:
+            pdf=response.read()
+            self.assertEqual(response.headers['Content-Type'],'application/pdf')
+            self.assertEqual(int(response.headers['Content-Length']),len(pdf))
+            self.assertIn("filename*=UTF-8''"+quote('Документ.pdf'),response.headers['Content-Disposition'])
+            self.assertTrue(pdf.startswith(b'%PDF-'))
+        self.assertEqual(self.request('/api/documents/job?id='+job['id'])['content'],saved['content'])
         self.assertEqual(self.request('/api/change-sets')['sets'],[])
         with urlopen(self.url+'/documentation.js') as response:
             self.assertIn('documentation-dialog',response.read().decode())
@@ -88,6 +109,22 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(len(catalog['modes']['analyze']),9)
         self.assertEqual(catalog['automatic'],['create_change_set'])
         self.assertFalse(self.request('/api/agent/context')['ready'])
+
+    def test_document_knowledge_routes_are_project_scoped_and_authenticated(self):
+        import base64
+        for path,body in [('/api/document-knowledge',None),('/api/document-knowledge/read?id=x',None),('/api/document-knowledge/upload',{}),('/api/document-knowledge/configure',{})]:
+            with self.assertRaises(HTTPError) as denied:self.request(path,body,authenticated=False)
+            self.assertEqual(denied.exception.code,403)
+        self.workspace.index(Path(__file__).resolve().parents[1]/'examples'/'demo',lambda *a,**k:None)
+        project=self.workspace.agent_tools.context()['project']
+        body={'project':project,'name':'Правила.md','data':base64.b64encode('Соблюдай стандарт именования.'.encode()).decode(),'rules':True}
+        with patch.object(self.workspace.document_knowledge,'schedule'):
+            result=self.request('/api/document-knowledge/upload',body)
+        item=self.request('/api/document-knowledge')['documents'][0]
+        self.assertEqual(item['id'],result['id']);self.assertTrue(item['rules'])
+        self.assertIn('стандарт',self.request('/api/document-knowledge/read?id='+item['id'])['content'])
+        with self.assertRaises(HTTPError):self.request('/api/document-knowledge/upload',{**body,'project':'wrong-project'})
+        with self.assertRaises(HTTPError):self.request('/api/document-knowledge/configure',{'project':'wrong-project','id':item['id'],'enabled':False,'rules':True})
         self.assertFalse(self.request('/api/agent/call',{})['ok'])
         with urlopen(self.url+'/agent-tools') as response:
             self.assertIn(self.workspace.token,response.read().decode())

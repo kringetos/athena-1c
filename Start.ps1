@@ -1,7 +1,7 @@
 $ErrorActionPreference = 'Stop'
 Set-Location -LiteralPath $PSScriptRoot
 function Start-Athena([string]$taskPython, [string[]]$taskPrefix = @()) {
-    & $taskPython @taskPrefix -c "import importlib.metadata as m; import antlr4, numpy, onnxruntime, tokenizers, huggingface_hub; assert m.version('antlr4-python3-runtime') == '4.13.2'; assert m.version('tokenizers') == '0.23.3'; assert m.version('huggingface-hub') == '1.33.0'" 2>$null
+    & $taskPython @taskPrefix -c "import importlib.metadata as m; import antlr4, numpy, onnxruntime, tokenizers, huggingface_hub, reportlab, mistune, pypdf; assert m.version('antlr4-python3-runtime') == '4.13.2'; assert m.version('tokenizers') == '0.23.3'; assert m.version('huggingface-hub') == '1.33.0'; assert m.version('reportlab') == '4.4.9'; assert m.version('mistune') == '3.2.0'; assert m.version('pypdf') == '6.10.0'" 2>$null
     if ($LASTEXITCODE -ne 0) {
         Write-Host 'Installing Athena dependencies...'
         & $taskPython @taskPrefix -m pip install -r requirements.txt

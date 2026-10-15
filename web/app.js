@@ -15,7 +15,7 @@ const escapeHtml = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&l
 async function api(path, body) {
   const response = await fetch('/api/' + path, {method: body === undefined ? 'GET' : 'POST', headers: {'X-Athena-Token': token, 'Content-Type':'application/json'}, body: body === undefined ? undefined : JSON.stringify(body)});
   const data = await response.json();
-  if (!response.ok) throw Error(data.error || 'Ошибка запроса');
+  if (!response.ok) {if(response.status===403&&data.error==='Требуется вход в аккаунт.')location.replace('/login');throw Error(data.error || 'Ошибка запроса');}
   return data;
 }
 function toast(text) { $('#toast').textContent = text; $('#toast').hidden = false; clearTimeout(toast.timer); toast.timer = setTimeout(() => $('#toast').hidden = true, 6000); }
@@ -92,7 +92,7 @@ async function updateProject(state, preserve = true) {
     if(same){for(const p of graphPoints)Object.assign(p,previous.points.get(p.key));graphCamera=previous.camera;updateGraphPositions();updateGraphCamera();}
   }
   renderRecent(state.recent); renderAuto(state.auto);renderChanges();
-  resetAIView();++functionSearchVersion;$('#function-search-results').replaceChildren();$('#function-context').hidden=true;
+  resetAIView();resetSearchResults();
   $('#status').textContent = preserve ? 'Проект автоматически обновлён · Локальный проект' : 'Проект открыт · Локальный проект';
   document.dispatchEvent(new CustomEvent('athena-project-changed'));
 }
@@ -545,7 +545,7 @@ $('#graph-search').oninput=()=> {
 $('#graph-search').onkeydown=e=>{if(e.key==='Escape')$('#graph-results').hidden=true;if(e.key==='Enter')$('#graph-results button')?.click();};
 
 function cleanCode(text) {return text.replace(/\r\n?/g,'\n');}
-function draftKey() {return `athena-draft:${connectionData.active || project.root}:${file.path}`;}
+function draftKey() {return `athena-draft:${$('meta[name=athena-user]')?.content||'legacy'}:${connectionData.active || project.root}:${file.path}`;}
 function restoreDraft() {
   if(!file?.editable)return;
   const key=draftKey();let stored=editorDrafts.get(key);
@@ -783,10 +783,9 @@ function renderDocuments(){
 function showCreation(){creationOpen=true;creationVisible=true;$('#create-dialog').hidden=false;$('#explorer').hidden=true;$('#welcome').hidden=true;renderDocuments();}
 function closeCreation(remove=false){if(remove)creationOpen=false;creationVisible=false;$('#create-dialog').hidden=true;$('#explorer').hidden=!selected;$('#welcome').hidden=!!selected;renderDocuments();}
 function renderInspector(node){const panel=$('#inspector-content');panel.replaceChildren();if(!node)return;const h=document.createElement('h3');h.textContent=node.name;panel.append(h);const small=document.createElement('p');small.className='muted';small.textContent=node.label;panel.append(small);for(const [key,value] of Object.entries(node.properties)){const field=document.createElement('div');field.className='inspector-field';const label=document.createElement('small');label.textContent=propertyLabels[key] || key;const text=document.createElement('div');text.textContent=value||'—';field.append(label,text);panel.append(field);}}
-function renderChanges(){const panel=$('#changes-list');panel.replaceChildren();const prefix=`athena-draft:${connectionData.active || project?.root}:`;const drafts=new Map(editorDrafts);try{for(let i=0;i<localStorage.length;i++){const key=localStorage.key(i);if(key.startsWith(prefix)){const value=JSON.parse(localStorage.getItem(key));if(value)drafts.set(key,value);}}}catch(e){}let count=0;for(const [key,draft] of drafts){if(!key.startsWith(prefix)||cleanCode(draft.content)===cleanCode(draft.original))continue;count++;const path=key.slice(prefix.length),b=document.createElement('button');b.textContent=path;b.onclick=async()=>{const node=[...nodes.values()].find(n=>n.files.some(f=>f.path===path));if(!node){toast('Модуль отсутствует в текущей выгрузке. Черновик сохранён.');return;}const f=node.files.find(f=>f.path===path);selectNode(node.id,'code');$('#files').value=f.id;await loadFile();$('#changes-panel').hidden=true;};panel.append(b);}$('#changes-count').textContent=count?` ${count}`:'';if(!count){const p=document.createElement('p');p.className='muted';p.textContent='Нет изменённых модулей. Правки сохраняются локально при редактировании кода.';panel.append(p);}}
-$('#rail-objects').onclick=()=>{$('#ai-panel').hidden=true;$('#function-search-panel').hidden=true;$('#changes-panel').hidden=true;$('#tree-search').focus();};
-$('#rail-search').onclick=showFunctionSearch;
-$('#rail-changes').onclick=()=>{$('#ai-panel').hidden=true;$('#function-search-panel').hidden=true;renderChanges();$('#changes-panel').hidden=!$('#changes-panel').hidden;};
+function renderChanges(){const panel=$('#changes-list');panel.replaceChildren();const prefix=`athena-draft:${$('meta[name=athena-user]')?.content||'legacy'}:${connectionData.active || project?.root}:`;const drafts=new Map(editorDrafts);try{for(let i=0;i<localStorage.length;i++){const key=localStorage.key(i);if(key.startsWith(prefix)){const value=JSON.parse(localStorage.getItem(key));if(value)drafts.set(key,value);}}}catch(e){}let count=0;for(const [key,draft] of drafts){if(!key.startsWith(prefix)||cleanCode(draft.content)===cleanCode(draft.original))continue;count++;const path=key.slice(prefix.length),b=document.createElement('button');b.textContent=path;b.onclick=async()=>{const node=[...nodes.values()].find(n=>n.files.some(f=>f.path===path));if(!node){toast('Модуль отсутствует в текущей выгрузке. Черновик сохранён.');return;}const f=node.files.find(f=>f.path===path);selectNode(node.id,'code');$('#files').value=f.id;await loadFile();$('#changes-panel').hidden=true;};panel.append(b);}$('#changes-count').textContent=count?` ${count}`:'';if(!count){const p=document.createElement('p');p.className='muted';p.textContent='Нет изменённых модулей. Правки сохраняются локально при редактировании кода.';panel.append(p);}}
+$('#rail-objects').onclick=()=>{$('#ai-panel').hidden=true;$('#changes-panel').hidden=true;$('#tree-search').focus();};
+$('#rail-changes').onclick=()=>{$('#ai-panel').hidden=true;renderChanges();$('#changes-panel').hidden=!$('#changes-panel').hidden;};
 $('#close-changes').onclick=()=>$('#changes-panel').hidden=true;
 $('#toggle-inspector').onclick=()=>{const workspace=$('.workspace');if(window.matchMedia('(max-width:1250px)').matches)workspace.classList.toggle('inspector-overlay');else workspace.classList.toggle('inspector-hidden');};
 $('#close-inspector').onclick=()=>{$('.workspace').classList.add('inspector-hidden');$('.workspace').classList.remove('inspector-overlay');};
@@ -806,11 +805,22 @@ applyEditorFont();
 
 let functionSearchVersion=0;
 let semanticEnabled=false;
-async function showFunctionSearch(){
-  $('#ai-panel').hidden=true;$('#changes-panel').hidden=true;
-  $('#function-search-panel').hidden=false;$('#function-query').focus();
-  await updateKnowledgeStatus();
+function closeSearchResults(){
+  $('#code-search-dropdown').hidden=true;++functionSearchVersion;
 }
+function resetSearchResults(){
+  closeSearchResults();$('#function-search-results').replaceChildren();$('#function-search-notice').textContent='';$('#function-context').hidden=true;
+}
+$('#function-query').addEventListener('input',()=>{if(!$('#function-query').value.trim())resetSearchResults();});
+$('#function-query').addEventListener('focus',()=>{if($('#function-query').value.trim()&&$('#function-search-results').childNodes.length)$('#code-search-dropdown').hidden=false;});
+$('#function-search-mode').addEventListener('change',()=>{if($('#function-query').value.trim())$('#function-search-form').requestSubmit();});
+document.addEventListener('keydown',e=>{
+  if(document.body.dataset.page!=='code'||document.querySelector('dialog[open]'))return;
+  if((e.ctrlKey||e.metaKey)&&e.shiftKey&&e.key.toLowerCase()==='f'){e.preventDefault();$('#function-query').focus();$('#function-query').select();}
+  if(e.key==='Escape'){closeSearchResults();$('#code-search-settings').open=false;}
+});
+document.addEventListener('click',e=>{if(!$('#function-search-panel').contains(e.target)){closeSearchResults();$('#code-search-settings').open=false;}});
+$('#code-search-settings').addEventListener('toggle',()=>{if($('#code-search-settings').open){closeSearchResults();updateKnowledgeStatus();}});
 async function updateKnowledgeStatus(){
   const version=functionSearchVersion;
   try{const state=await api('knowledge');if(version!==functionSearchVersion)return;const status=$('#knowledge-status');const sem=state.semantic;semanticEnabled=!!sem?.enabled;const button=$('#semantic-toggle');button.disabled=!state.ready;button.textContent=semanticEnabled?'Приостановить индексацию / поиск':sem?.indexed?'Продолжить смысловую индексацию':'Включить смысловой поиск';let semanticText=semanticEnabled?(sem.ready?`${sem.model} · индекс готов (${sem.indexed}/${sem.total})`:sem.job.status==='error'?`Ошибка модели: ${sem.job.error}`:`${sem.job.phase||'Индексация'} · ${sem.job.done||0}/${sem.job.total||sem.total}`):`Смысловая индексация приостановлена · сохранено ${sem?.indexed||0}/${sem?.total||0} фрагментов. Поиск по объектам и коду доступен.`;status.textContent=state.ready?`SQLite · BSL / ANTLR · ${state.modules} модулей · ${state.symbols} методов · ${state.warnings} замечаний разбора. ${semanticText}`:'Откройте проект и дождитесь индексации.';
@@ -818,10 +828,10 @@ async function updateKnowledgeStatus(){
   }catch(e){if(version===functionSearchVersion)$('#knowledge-status').textContent=e.message;}
 }
 $('#semantic-toggle').onclick=async()=>{const button=$('#semantic-toggle');button.disabled=true;try{await api('embeddings',{enabled:!semanticEnabled});await updateKnowledgeStatus();}catch(e){toast(e.message);}finally{button.disabled=false;}};
-setInterval(()=>{if(!$('#function-search-panel').hidden)updateKnowledgeStatus();},3000);
-$('#close-function-search').onclick=()=>{$('#function-search-panel').hidden=true;++functionSearchVersion;};
+setInterval(()=>{if(!$('#function-search-panel').hidden&&$('#code-search-settings').open)updateKnowledgeStatus();},3000);
+$('#close-function-search').onclick=closeSearchResults;
 $('#function-search-form').onsubmit=async e=>{
-  e.preventDefault();const request=++functionSearchVersion;const panel=$('#function-search-results');panel.textContent='Поиск…';$('#function-context').hidden=true;
+  e.preventDefault();if(!$('#function-query').value.trim()){resetSearchResults();return;}$('#code-search-settings').open=false;$('#code-search-dropdown').hidden=false;const request=++functionSearchVersion;const panel=$('#function-search-results');panel.textContent='Поиск…';$('#function-context').hidden=true;
   try{const response=await api('search-functions?q='+encodeURIComponent($('#function-query').value)+'&mode='+$('#function-search-mode').value);if(request!==functionSearchVersion)return;panel.replaceChildren();$('#function-search-notice').textContent=response.warning||({hybrid:'Результаты по коду и смыслу',semantic:'Результаты по смыслу',lexical:'Результаты по объектам и ключевым словам'}[response.mode]);
     if(!response.results.length){panel.textContent='Ничего не найдено. Попробуйте имя функции или слова из её комментария.';return;}
     for(const item of response.results){const row=document.createElement('article');row.className='function-result';const open=document.createElement('button');open.className='function-result-name';open.textContent=`${item.name}(${item.parameters.replace(/\s+/g,' ')})${item.export?' · Экспорт':''}`;open.onclick=()=>openFunctionResult(item);const location=document.createElement('small');location.textContent=`${item.owner_name} · ${item.module_name} · строки ${item.declaration_line}–${item.end_line}${item.match?' · '+({hybrid:'Код + смысл',semantic:'По смыслу',lexical:'По коду','object-code':'Код выбранного объекта',keywords:'Ключевые слова'}[item.match]):''}`;const comment=document.createElement('p');comment.textContent=item.comment||item.path;const context=document.createElement('button');context.textContent='Код и вызовы';context.onclick=()=>showFunctionContext(item.id);row.append(open,location,comment,context);panel.append(row);}
@@ -833,7 +843,7 @@ async function openFunctionResult(item){
   selectNode(item.owner_id,'code');$('#files').value=item.file_id;await loadFile();
   if(!file||currentFileId!==item.file_id||file.hash!==item.file_hash){toast('Исходник изменился после индексации. Обновите проект и повторите поиск.');return;}
   if(hasDraft()){toast('Открыт локальный черновик. Строки результата относятся к сохранённой версии.');return;}
-  $('#function-search-panel').hidden=true;$('#ai-panel').hidden=true;
+  closeSearchResults();$('#ai-panel').hidden=true;
   const input=$('#code-editor'),lines=input.value.split('\n');const offset=lines.slice(0,item.declaration_line-1).reduce((n,line)=>n+line.length+1,0);
   input.focus();input.setSelectionRange(offset,offset);input.scrollTop=Math.max(0,(item.declaration_line-3)*Number(getComputedStyle(input).lineHeight.replace('px','')));syncEditorScroll();updateEditorPosition();
 }
@@ -983,6 +993,11 @@ $('.ai-tools').addEventListener('click',event=>{if(event.target.closest('button,
 function aiSourceButton(source,label){
   const button=document.createElement('button');button.type='button';button.className='ai-citation';button.textContent=label;button.title=source.name+' · '+source.path;
   button.onclick=async()=>{
+    if(source.type==='reference'){
+      const dialog=document.createElement('dialog'),pre=document.createElement('pre'),close=document.createElement('button');
+      dialog.className='knowledge-read-dialog';pre.textContent=source.context;close.textContent='Закрыть';close.onclick=()=>dialog.close();
+      dialog.append(pre,close);dialog.onclose=()=>dialog.remove();document.body.append(dialog);dialog.showModal();return;
+    }
     document.dispatchEvent(new CustomEvent('athena-open-code'));
     if(source.type!=='metadata')return openFunctionResult({...source,declaration_line:source.start_line});
     try{
@@ -1082,10 +1097,11 @@ $("#ai-index-settings-open").onclick=()=>$("#index-settings-open").onclick();
     page=value;document.body.dataset.page=value;
     $('#page-title').textContent=titles[value];
     for(const [name,id] of Object.entries(navIds)){const b=$('#'+id);b.classList.toggle('active',name===value);if(name===value)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current');}
-    $('#rail-search').classList.remove('active');$('#rail-changes').classList.remove('active');$('#nav-agent').classList.remove('active');$('#nav-agent').removeAttribute('aria-current');
+    $('#rail-changes').classList.remove('active');$('#nav-agent').classList.remove('active');$('#nav-agent').removeAttribute('aria-current');
     $('#ai-panel').hidden=!['home','assistant'].includes(value);$('#dashboard-views').hidden=!['docs','history'].includes(value);
     for(const name of ['docs','history'])$('#dashboard-'+name).hidden=value!==name;
-    if(value!=='code'){$('#function-search-panel').hidden=true;$('#changes-panel').hidden=true;}
+    $('#function-search-panel').hidden=value!=='code';
+    if(value!=='code'){$('#changes-panel').hidden=true;closeSearchResults();$('#code-search-settings').open=false;}else updateKnowledgeStatus();
     if(['home','assistant'].includes(value)){$('.ai-mode-tabs button')?.click();}
     main.scrollTop=0;
   }
@@ -1094,7 +1110,6 @@ $("#ai-index-settings-open").onclick=()=>$("#index-settings-open").onclick();
   $('#nav-assistant').onclick=()=>{setPage('assistant');$('#ai-question').focus({preventScroll:true});refresh();};
   $('#nav-agent').onclick=()=>{setPage('assistant');$('.ai-mode-tabs button:last-child')?.click();$('#nav-agent').classList.add('active');$('#nav-agent').setAttribute('aria-current','page');$('#nav-assistant').classList.remove('active');$('#nav-assistant').removeAttribute('aria-current');$('#page-title').textContent='Агент кода';};
   for(const name of ['docs','history'])$('#nav-'+name).onclick=()=>{setPage(name);if(name==='history')loadHistory();};
-  $('#rail-search').addEventListener('click',()=>{setPage('code');$('#function-search-panel').hidden=false;$('#rail-search').classList.add('active');});
   $('#rail-changes').addEventListener('click',()=>{setPage('code');$('#changes-panel').hidden=false;$('#rail-changes').classList.add('active');});
   $('#ai-close').addEventListener('click',()=>setPage('code'));
   $('#docs-open-configuration').onclick=$('#dashboard-browse-code').onclick=()=>setPage('code');

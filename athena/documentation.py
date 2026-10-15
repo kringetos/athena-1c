@@ -181,6 +181,13 @@ class Documentation:
         system = instructions()
         with self.lock, self.w.lock:
             material = self.prepare(data, connection['context_chars'] - len(system) - 800)
+            git_revision = self.w.git_projects.revision(self.context()['project'])
+            references = self.w.reference_context(self.context()['project'], data['title']+' '+data.get('goal',''), 3)
+            material['references'] = []
+            for reference in references['items']:
+                candidate = material['references'] + [reference]
+                if len(json.dumps([system, material, candidate], ensure_ascii=False)) < connection['context_chars'] - 800:
+                    material['references'].append(reference)
             if len(json.dumps([system, material], ensure_ascii=False)) > connection['context_chars']:
                 raise ValueError('Материалы не помещаются в контекст. Уменьшите область или увеличьте лимит контекста AI.')
             identity = secrets.token_hex(16)
@@ -192,11 +199,14 @@ class Documentation:
                    'context': self.context(), 'created': time.time(), 'status': 'running', 'phase': 'Создаём документацию по исходникам',
                    'content': '', 'warnings': [], 'coverage': material['coverage'], 'model': connection['model'],
                    'sources': [{k:v for k,v in s.items() if k != 'content'} for s in material['sources']],
+                   'git_revision': git_revision, 'reference_sources': [{k:v for k,v in s.items() if k!='content'} for s in material['references']],
                    '_cancel': threading.Event()}
             try:
                 self.jobs[identity] = job
                 self.persist(job)
-                worker = threading.Thread(target=self.run, args=(job, provider, connection, key, system, material), daemon=True)
+                from athena.accounts import thread, ACTOR
+                job['owner']=(ACTOR.get() or {}).get('id')
+                worker = thread(self.run, (job, provider, connection, key, system, material))
                 worker.start()
             except Exception:
                 with self.w.ai.lock:
@@ -213,6 +223,8 @@ class Documentation:
                     return
                 if self.context() != job['context'] or not self.w.agent_tools._context()['ready']:
                     raise ValueError('Проект изменился во время генерации. Создайте документ по актуальному коду.')
+                if self.w.git_projects.revision(job['context']['project']) != job['git_revision']:
+                    raise ValueError('Git-материалы изменились во время генерации. Повторите запрос.')
                 for source in job['sources']:
                     # Snapshot indexing can lag an external file edit; compare actual source hashes too.
                     identity = next((i for i,p in self.w.catalog.files.items() if p.relative_to(self.w.catalog.root).as_posix() == source['path']), None)
@@ -262,6 +274,18 @@ class Documentation:
             self.persist(job)
             if job['id'] in self.jobs: self.jobs[job['id']].update(content=content, updated=job['updated'])
             return self.public(job)
+
+    def pdf(self, data):
+        with self.lock, self.w.lock:
+            job = self.read(data.get('id'))
+            if job['context']['project'] != self.context()['project'] or job['status'] != 'ready':
+                raise ValueError('Откройте готовый документ текущего проекта.')
+            content = data.get('content', job['content'])
+            if not isinstance(content, str) or not content.strip() or len(content) > 100000:
+                raise ValueError('Укажите текст документа до 100000 символов.')
+        # Rendering a download must not change the saved document or hold workspace locks.
+        from athena.document_pdf import render_pdf
+        return render_pdf(job, content), job['title']
 
     def close(self):
         with self.lock:

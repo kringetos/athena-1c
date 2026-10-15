@@ -16,7 +16,7 @@
   <p class="documentation-skill-note">▤ Documentation Generator<br><span>Ваш скилл и шаблон · русский · Markdown</span></p>
   <button class="primary" id="generate-document" disabled>Создать документацию ↗</button><button type="button" id="cancel-document-generation" hidden>Остановить генерацию</button>
   <p id="document-status" role="status" aria-live="polite"></p></form>
-  <section class="documentation-result"><div class="documentation-result-toolbar"><div class="documentation-result-tabs"><button type="button" id="document-preview-tab" aria-pressed="true">Просмотр</button><button type="button" id="document-edit-tab" aria-pressed="false">Markdown</button></div><div><button type="button" id="save-document" disabled>Сохранить</button><button type="button" id="download-document" disabled>Скачать .md ↓</button></div></div>
+  <section class="documentation-result"><div class="documentation-result-toolbar"><div class="documentation-result-tabs"><button type="button" id="document-preview-tab" aria-pressed="true">Просмотр</button><button type="button" id="document-edit-tab" aria-pressed="false">Markdown</button></div><div><button type="button" id="save-document" disabled>Сохранить</button><button type="button" id="download-document" disabled>Скачать .md ↓</button><button type="button" id="download-document-pdf" disabled>Скачать PDF ↓</button></div></div>
   <div id="document-warnings" role="status"></div><article id="document-preview" class="ai-markdown"><div class="documentation-empty"><span>▤</span><h3>Документ начнётся с исходников</h3><p>Выберите область и тип. Athena создаст черновик, который можно проверить и отредактировать.</p></div></article><textarea id="document-markdown" spellcheck="false" aria-label="Текст документа Markdown" hidden></textarea><details id="document-sources" hidden><summary>Использованные исходники</summary><div></div></details></section></div>`;
   document.body.append(dialog);
   let capture=null,context=null,current=null,timer=null,editing=false,opening=0;
@@ -40,7 +40,7 @@
     current=job;const running=job.status==='running';
     status(job.error||job.phase);
     $('#generate-document').disabled=running||!context;$('#cancel-document-generation').hidden=!running;
-    $('#save-document').disabled=job.status!=='ready';$('#download-document').disabled=job.status!=='ready';
+    $('#save-document').disabled=job.status!=='ready';$('#download-document').disabled=job.status!=='ready';$('#download-document-pdf').disabled=job.status!=='ready';
     $('#document-title').value=job.title;$('#document-kind').value=job.kind;
     $('#document-warnings').replaceChildren();
     for(const warning of job.warnings||[]){const p=document.createElement('p');p.textContent=warning;$('#document-warnings').append(p);}
@@ -57,7 +57,7 @@
     const version=++opening;clearTimeout(timer);capture=captureCode();context=null;current=null;setEditing(false);
     $('#documentation-form').reset();$('#document-warnings').replaceChildren();$('#document-source-preview').hidden=true;$('#document-sources').hidden=true;$('#document-markdown').value='';
     $('#document-preview').innerHTML='<div class="documentation-empty"><span aria-hidden="true">▤</span><h3>Документ начнётся с исходников</h3><p>Выберите область и тип. Athena создаст черновик, который можно проверить и отредактировать.</p></div>';
-    for(const id of ['generate-document','save-document','download-document'])$('#'+id).disabled=true;
+    for(const id of ['generate-document','save-document','download-document','download-document-pdf'])$('#'+id).disabled=true;
     $('#cancel-document-generation').hidden=true;
     $('#document-scope option[value="module"]').disabled=!capture;
     $('#document-scope option[value="selection"]').disabled=!capture||capture.start===capture.end;
@@ -80,7 +80,7 @@
     const scope=$('#document-scope').value;
     const body={title:$('#document-title').value,kind:$('#document-kind').value,goal:$('#document-goal').value,scope,context};
     if(scope!=='project')Object.assign(body,{file_id:capture.file_id,hash:capture.hash,draft:capture.draft,start:capture.start,end:capture.end});
-    $('#generate-document').disabled=true;$('#save-document').disabled=true;$('#download-document').disabled=true;setEditing(false);$('#document-preview').textContent='Athena создаёт документ по выбранным исходникам…';$('#document-warnings').replaceChildren();$('#document-sources').hidden=true;status('Запускаем генерацию…');
+    $('#generate-document').disabled=true;$('#save-document').disabled=true;$('#download-document').disabled=true;$('#download-document-pdf').disabled=true;setEditing(false);$('#document-preview').textContent='Athena создаёт документ по выбранным исходникам…';$('#document-warnings').replaceChildren();$('#document-sources').hidden=true;status('Запускаем генерацию…');
     try{const started=await api('documents/start',body);current={id:started.id,status:'running'};await poll();}catch(e){status(e.message);$('#generate-document').disabled=false;}
   };
   $('#document-scope').onchange=sourceDescription;
@@ -92,6 +92,18 @@
   $('#download-document').onclick=()=>{
     const audit='\n\n---\n\n## Данные генерации Athena\n\n'+(current.warnings||[]).map(w=>'- '+w).join('\n')+'\n\n'+(current.sources||[]).map(s=>'- `'+s.path+'`, строки '+s.start_line+'–'+s.end_line+'; SHA-256: `'+s.hash+'`'+(s.draft?' (черновик)':'')).join('\n');
     const blob=new Blob([$('#document-markdown').value+audit],{type:'text/markdown;charset=utf-8'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=(current.title.replace(/[<>:"/\\|?*\x00-\x1f]/g,'_')||'Документация')+'.md';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+  };
+  $('#download-document-pdf').onclick=async()=>{
+    if(current?.status!=='ready')return;
+    const id=current.id,version=opening,b=$('#download-document-pdf');b.disabled=true;status('Подготавливаем PDF…');
+    try{
+      const response=await fetch('/api/documents/pdf',{method:'POST',headers:{'Content-Type':'application/json','X-Athena-Token':token},body:JSON.stringify({id,content:$('#document-markdown').value})});
+      if(!response.ok){const error=await response.json();throw new Error(error.error||'Не удалось создать PDF');}
+      const blob=await response.blob();if(version!==opening||current?.id!==id)return;
+      const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=(current.title.replace(/[<>:"/\\|?*\x00-\x1f]/g,'_')||'Документация')+'.pdf';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+      status('PDF подготовлен для скачивания');
+    }catch(e){if(version===opening)status(e.message);}
+    finally{if(version===opening&&current?.id===id)b.disabled=current.status!=='ready';}
   };
   $('#nav-docs').addEventListener('click',refreshList);
   document.addEventListener('athena-project-changed',()=>{opening++;context=null;dialog.close();clearTimeout(timer);refreshList();});

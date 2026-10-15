@@ -32,7 +32,7 @@ def definitions():
     rows = [
         ('get_configuration', 'Корень конфигурации и полный счётчик объектов каждого вида. Начни с этого инструмента для обзора проекта.', obj({}), False),
         ('list_objects', 'Полный постраничный список объектов конфигурации. child_counts считает собственные реквизиты Attribute, табличные части TabularSection, измерения Dimension и ресурсы Resource напрямую из XML, независимо от наличия BSL. Стандартные и общие реквизиты и поля табличных частей не входят в Attribute. null означает отсутствующий XML. Для полного списка пройди все next_offset.', obj({'kinds': array({'type':'string','enum':list(LABELS)}, 20), **PAGE}), False),
-        ('search', 'Поиск по коду, метаданным и справке выбранной платформы.', obj({'query': string(), 'scope': {'type':'string','enum':['all','code','metadata','platform']}, 'source': string(128), 'exact': {'type':'boolean'}, 'limit': integer(1, 30)}, ['query']), False),
+        ('search', 'Поиск по коду, метаданным, справке, документам и подключённым Git-проектам (scope=git).', obj({'query': string(), 'scope': {'type':'string','enum':['all','code','metadata','platform','documents','git']}, 'source': string(128), 'exact': {'type':'boolean'}, 'limit': integer(1, 30)}, ['query']), False),
         ('read_module', 'Читать диапазон строк BSL-модуля; возвращает хеш для правки. set_id читает черновик.', obj({'file_id':string(128), 'set_id':string(32), 'start_line':integer(1,1000000), 'line_count':integer(1,300)}, ['file_id']), False),
         ('get_object', 'Читать объект метаданных, список модулей и страницу дочерних объектов.', obj({'object_id':string(128), **PAGE}, ['object_id']), False),
         ('get_symbol', 'Читать функцию или процедуру из зафиксированного снимка проекта.', obj({'symbol_id':string(128)}, ['symbol_id']), False),
@@ -166,7 +166,13 @@ class AgentTools:
             return {'items':[{k:n.get(k) for k in ['id','name','kind','source','missing','child_counts']} for n in result['objects']],
                     'total':result['total'],'next_offset':result['next_offset'],
                     'count_scope':'Непосредственные дочерние объекты XML; Attribute — только собственные реквизиты. Стандартные, общие и поля табличных частей не включены.'}
-        if tool=='search': return bounded(w.language.search(a['query'],source=a.get('source',''),snapshot=snapshot,scope=a.get('scope','code'),exact=a.get('exact',False),limit=a.get('limit',20)))
+        if tool=='search':
+            scope=a.get('scope','code')
+            if scope=='git':return w.git_projects.search(context['project'],a['query'],a.get('limit',5))
+            if scope=='documents':return w.reference_context(context['project'],a['query'],a.get('limit',5))
+            result=bounded(w.language.search(a['query'],source=a.get('source',''),snapshot=snapshot,scope=scope,exact=a.get('exact',False),limit=a.get('limit',20)))
+            if scope=='all':result['documents']=w.reference_context(context['project'],a['query'],min(a.get('limit',5),5))
+            return result
         if tool=='read_reference':
             item=w.language.item('platform',a['page_id'],source=a['source'])
             return {'item':bounded(item),'truncated':len(json.dumps(item,ensure_ascii=False))>16000}

@@ -106,4 +106,37 @@ class DocumentationTests(unittest.TestCase):
         self.w.ai.configure({'provider':'openai',**DEFAULTS['openai'],'base_url':'https://example.org/v1','model':'test','allow_remote_code':False})
         with self.assertRaisesRegex(ValueError,'Разрешите'):self.docs.start(self.request())
 
+    def test_pdf_exports_editor_text_without_changing_document_or_sources(self):
+        before=self.fixture.file_path.read_bytes()
+        with patch('athena.documentation.generate',return_value=('# Документ\nСохранено.',False)):
+            job=self.finished(self.docs.start(self.request()))
+        edited='# Текущая редакция\n\n**Кириллица** и `Код()`.\n\n```bsl\nСообщить("Тест");\n```'
+        from athena.document_pdf import render_pdf
+        with patch('athena.document_pdf.render_pdf',wraps=render_pdf) as render:
+            pdf,title=self.docs.pdf({'id':job['id'],'content':edited})
+        self.assertTrue(pdf.startswith(b'%PDF-'))
+        self.assertIn(b'/ToUnicode',pdf)
+        self.assertEqual(title,job['title'])
+        self.assertEqual(render.call_args.args[1],edited)
+        self.assertEqual(render.call_args.args[0]['sources'],job['sources'])
+        self.assertEqual(self.docs.read(job['id'])['content'],job['content'])
+        self.assertEqual(self.fixture.file_path.read_bytes(),before)
+        for invalid in ['',None,42,'x'*100001]:
+            with self.assertRaises(ValueError):self.docs.pdf({'id':job['id'],'content':invalid})
+        with patch.object(self.docs,'context',return_value={'project':'another-project'}):
+            with self.assertRaises(ValueError):self.docs.pdf({'id':job['id']})
+        job['status']='cancelled';self.docs.persist(job);self.docs.jobs.pop(job['id'],None)
+        with self.assertRaises(ValueError):self.docs.pdf({'id':job['id']})
+
+    def test_pdf_handles_multipage_tables_long_code_and_literal_html(self):
+        from athena.document_pdf import render_pdf
+        text='# Обзор\n\n| Объект | Назначение |\n|---|---|\n'
+        text+=''.join('| Справочник | '+('Очень длинное описание ' * 100 if i==20 else 'Описание')+' |\n' for i in range(100))
+        text+='\n```bsl\n'+('ДлинныйИдентификатор'*200)+'\n'+('Сообщить("Привет");\n'*150)+'```\n\n'
+        text+='<script>alert("test")</script>\n\n![Картинка](http://127.0.0.1:9/private)'
+        with patch('urllib.request.urlopen',side_effect=AssertionError('No network for PDF')):
+            pdf=render_pdf({'title':'Проверка','warnings':['Неполный контекст'],'sources':[]},text)
+        self.assertTrue(pdf.startswith(b'%PDF-'))
+        self.assertGreater(pdf.count(b'/Type /Page'),3)
+
 if __name__=='__main__':unittest.main()
