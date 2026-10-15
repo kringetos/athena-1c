@@ -68,7 +68,24 @@ class AgentTests(unittest.TestCase):
     def test_schema_rejects_extra_arguments_bool_integer_and_unknown_tool(self):
         for tool,args in [('read_module',{'file_id':self.file_id,'start_line':True}),('read_module',{'file_id':self.file_id,'path':'../../secret'}),('apply_to_1c',{}),('get_calls',{'symbol_id':'x','direction':'other'}),('create_object',{'set_id':'x','revision':1,'spec':{'kind':'Catalog','name':'X','evil':1}})]:
             self.assertFalse(self.tools.call(self.request(tool,args))['ok'])
-        self.assertEqual(len(definitions()),16)
+        self.assertEqual(len(definitions()),18)
+
+    def test_complete_metadata_pages_and_counts_do_not_depend_on_code_search(self):
+        from collections import Counter
+        root=self.call('get_configuration',{})
+        expected=[n for n in self.w.catalog.nodes.values() if n.get('parent')==root['id'] and n['kind'] not in {'Module','File'}]
+        self.assertEqual(root['total'],len(expected))
+        first=self.call('list_objects',{'limit':1})
+        second=self.call('list_objects',{'offset':1,'limit':1})
+        self.assertEqual(first['total'],len(expected))
+        self.assertNotEqual(first['items'][0]['id'],second['items'][0]['id'])
+        for node in expected:
+            details=self.call('get_object',{'object_id':node['id'],'limit':1})
+            counts=dict(Counter(n['kind'] for n in self.w.catalog.nodes.values() if n.get('parent')==node['id']))
+            self.assertEqual(details['child_counts'],counts)
+            page=self.call('list_objects',{'kinds':[node['kind']]})
+            listed=next(n for n in page['items'] if n['id']==node['id'])
+            self.assertEqual(listed['child_counts'],counts)
 
     def test_edit_is_atomic_on_ambiguous_replacement_and_hash_conflict(self):
         value=self.create(); args={'set_id':value['id'],'revision':value['revision'],'file_id':self.file_id,'expected_hash':text_hash(read_text(self.file_path)),'edits':[{'old_text':read_text(self.file_path).splitlines()[0],'new_text':'// Начало'},{'old_text':'Не существует','new_text':'Замена'}]}

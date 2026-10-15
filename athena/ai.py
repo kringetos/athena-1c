@@ -8,6 +8,7 @@ import threading
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, build_opener, HTTPRedirectHandler, ProxyHandler
+from athena.ai_metadata import inventory_request, inventory_answer, structure_request
 
 DEFAULTS={
     'ollama':{'base_url':'http://127.0.0.1:11434','model':'','timeout':120,'context_chars':18000,'allow_remote_code':False},
@@ -195,7 +196,7 @@ class AI:
         if not isinstance(question,str) or not question.strip() or len(question)>2000:raise ValueError('Введите вопрос до 2000 символов.')
         if not isinstance(context_only,bool):raise ValueError('Некорректный режим запроса.')
         provider,settings,key=self.connection()
-        if settings['model'] and not context_only and not local_url(settings['base_url']) and not settings['allow_remote_code']:
+        if settings['model'] and not context_only and not local_url(settings['base_url']) and not settings['allow_remote_code'] and inventory_request(question) is None and structure_request(question) is None:
             raise ValueError('В настройках разрешите передачу найденных фрагментов выбранному внешнему серверу или выберите локальную модель.')
         with self.lock:
             if self.active:raise ValueError('Предыдущий запрос ещё обрабатывается сервером. Дождитесь ответа или тайм-аута.')
@@ -212,6 +213,15 @@ class AI:
         def run():
             try:
                 search=retrieve(question.strip()[:500])
+                if search.get('mode') == 'metadata':
+                    answer, sources = inventory_answer(search['inventory'])
+                    for source in sources:
+                        source['snapshot'] = search['snapshot']
+                    update(status='ready',kind='context' if context_only else 'metadata',
+                           answer=answer,snapshot=search['snapshot'],sources=sources,
+                           mode='metadata',warnings=[],inventory_total=search['inventory']['total'],
+                           inventory_complete=search['inventory']['complete'])
+                    return
                 sources=context_pack(store,search,settings['context_chars'])
                 warnings=[search['warning']] if search.get('warning') else []
                 update(snapshot=search['snapshot'],sources=sources,mode=search['mode'],warnings=warnings)
@@ -221,6 +231,8 @@ class AI:
                 elif context_only or not settings['model']:
                     update(status='ready',kind='context',answer='Найден контекст для вопроса. Для объяснения подключите модель в настройках AI.' if not settings['model'] else 'Найденные источники подготовлены без обращения к модели.')
                 else:
+                    if not local_url(settings['base_url']) and not settings['allow_remote_code']:
+                        raise ValueError('Передача кода выбранному внешнему серверу запрещена.')
                     update(phase='Модель анализирует найденный код')
                     context='\n\n'.join(source['context'] for source in sources)
                     messages=[{'role':'system','content':SYSTEM},{'role':'user','content':json.dumps({'question':question.strip(),'sources':context},ensure_ascii=False)}]

@@ -57,11 +57,36 @@ class ServerTests(unittest.TestCase):
                 self.request(route,{},authenticated=False)
             self.assertEqual(denied.exception.code,403)
 
+    def test_documentation_routes_require_token_and_keep_documents_separate(self):
+        from athena.ai import DEFAULTS
+        for path,body in [('/api/documents',None),('/api/documents/job?id=x',None),('/api/documents/start',{}),('/api/documents/cancel',{}),('/api/documents/save',{})]:
+            with self.assertRaises(HTTPError) as denied:self.request(path,body,authenticated=False)
+            self.assertEqual(denied.exception.code,403)
+        self.workspace.index(Path(__file__).resolve().parents[1]/'examples'/'demo',lambda *a,**k:None)
+        self.workspace.ai.configure({'provider':'ollama',**DEFAULTS['ollama'],'model':'doc-test'})
+        context=self.request('/api/agent/context')
+        with patch('athena.documentation.generate',return_value=('# Документ\nОписание исходников.',False)):
+            started=self.request('/api/documents/start',{'title':'Документ','kind':'Архитектура','scope':'project',
+                'context':{k:context[k] for k in ['project','snapshot','workspace_revision']}})
+            deadline=time.monotonic()+3
+            while self.workspace.ai.active and time.monotonic()<deadline:time.sleep(.01)
+        job=self.request('/api/documents/job?id='+started['id'])
+        self.assertEqual(job['status'],'ready',job)
+        self.assertEqual(self.request('/api/documents')['documents'][0]['id'],job['id'])
+        saved=self.request('/api/documents/save',{'id':job['id'],'content':'# Новая редакция'})
+        self.assertEqual(saved['content'],'# Новая редакция')
+        self.assertEqual(self.request('/api/change-sets')['sets'],[])
+        with urlopen(self.url+'/documentation.js') as response:
+            self.assertIn('documentation-dialog',response.read().decode())
+
     def test_agent_routes_authentication_and_protocol(self):
         for path,body in [('/api/agent/tools',None),('/api/agent/context',None),('/api/agent/history',None),('/api/agent/call',{})]:
             with self.assertRaises(HTTPError) as denied: self.request(path,body,authenticated=False)
             self.assertEqual(denied.exception.code,403)
-        self.assertEqual(len(self.request('/api/agent/tools')['tools']),16)
+        catalog=self.request('/api/agent/tools')
+        self.assertEqual(len(catalog['tools']),18)
+        self.assertEqual(len(catalog['modes']['analyze']),9)
+        self.assertEqual(catalog['automatic'],['create_change_set'])
         self.assertFalse(self.request('/api/agent/context')['ready'])
         self.assertFalse(self.request('/api/agent/call',{})['ok'])
         with urlopen(self.url+'/agent-tools') as response:
@@ -104,10 +129,58 @@ class ServerTests(unittest.TestCase):
         self.assertTrue(result['sources'])
         self.assertEqual(result['snapshot'],self.workspace.knowledge_snapshot)
 
+    def test_ai_inventory_uses_metadata_instead_of_function_search(self):
+        self.workspace.index(Path(__file__).resolve().parents[1]/'examples'/'demo',lambda *args,**kwargs:None)
+        root = next(n['id'] for n in self.workspace.catalog.nodes.values() if n['kind']=='Configuration')
+        self.workspace.catalog.add('no-code-document','ДокументБезМодуля','Document',root,
+                                   source='Documents/ДокументБезМодуля.xml')
+        self.workspace.knowledge_snapshot = self.workspace.knowledge.index(self.workspace.catalog,'test')
+        with patch.object(self.workspace,'search_functions',side_effect=AssertionError('Code search must not run')):
+            started=self.request('/api/ai/ask',{'question':'Какие есть документы?'})
+            deadline=time.monotonic()+3
+            while True:
+                result=self.request('/api/ai/job?id='+started['id'])
+                if result['status']!='running':break
+                self.assertLess(time.monotonic(),deadline)
+                time.sleep(.01)
+        expected={n['name'] for n in self.workspace.catalog.nodes.values() if n['kind']=='Document'}
+        self.assertEqual(result['kind'],'metadata')
+        self.assertEqual({s['name'] for s in result['sources']},expected)
+        self.assertTrue(result['inventory_complete'])
+        self.assertIn('ДокументБезМодуля',result['answer'])
+
     def test_ai_routes_require_token(self):
-        for route,body in [('/api/ai/settings',None),('/api/ai/job?id=x',None),('/api/ai/settings',{}),('/api/ai/models',{}),('/api/ai/ask',{}),('/api/ai/cancel',{})]:
+        for route,body in [('/api/assistant/ask',{}),('/api/ai/settings',None),('/api/ai/job?id=x',None),('/api/ai/settings',{}),('/api/ai/models',{}),('/api/ai/ask',{}),('/api/ai/cancel',{})]:
             with self.assertRaises(HTTPError) as denied:self.request(route,body,authenticated=False)
             self.assertEqual(denied.exception.code,403)
+
+    def test_assistant_routes_counts_locally_and_other_questions_to_read_only_tools(self):
+        self.workspace.index(Path(__file__).resolve().parents[1]/'examples'/'demo',lambda *args,**kwargs:None)
+        with patch('athena.code_agent.model_turn',side_effect=AssertionError('No LLM for metadata counts')):
+            started=self.request('/api/assistant/ask',{'question':'Сколько реквизитов и табличных в каждом справочнике в системе'})
+            self.assertEqual(started['engine'],'ai')
+            deadline=time.monotonic()+3
+            while self.workspace.ai.active:
+                self.assertLess(time.monotonic(),deadline);time.sleep(.01)
+        result=self.request('/api/ai/job?id='+started['id'])
+        self.assertEqual(result['kind'],'metadata')
+        self.assertIn('| Объект |',result['answer'])
+        self.assertIn('| Реквизит: количество | Табличная часть: количество |',result['answer'])
+        from athena.ai import DEFAULTS
+        self.workspace.ai.configure({'provider':'ollama',**DEFAULTS['ollama'],'model':'test'})
+        responses=[({'role':'assistant','content':'','tool_calls':[{'id':'configuration','function':{'name':'get_configuration','arguments':'{}'}}]},False,{'input_tokens':1,'output_tokens':1}),
+                   ({'role':'assistant','content':'Метаданные прочитаны.'},False,{'input_tokens':1,'output_tokens':1})]
+        with patch('athena.code_agent.model_turn',side_effect=responses):
+            started=self.request('/api/assistant/ask',{'question':'Объясни структуру текущего проекта'})
+            self.assertEqual(started['engine'],'agent')
+            deadline=time.monotonic()+3
+            while self.workspace.code_agent.active:
+                self.assertLess(time.monotonic(),deadline);time.sleep(.01)
+        result=self.request('/api/agent/job?id='+started['id'])
+        self.assertEqual(result['status'],'ready')
+        self.assertEqual(result['mode'],'analyze')
+        self.assertIsNone(result['set_id'])
+        self.assertEqual(result['steps'][0]['tool'],'get_configuration')
 
     def test_open_demo_and_fetch_unicode_file(self):
         self.request('/api/open', {'path': '__DEMO__'})

@@ -94,6 +94,7 @@ async function updateProject(state, preserve = true) {
   renderRecent(state.recent); renderAuto(state.auto);renderChanges();
   resetAIView();++functionSearchVersion;$('#function-search-results').replaceChildren();$('#function-context').hidden=true;
   $('#status').textContent = preserve ? 'Проект автоматически обновлён · Локальный проект' : 'Проект открыт · Локальный проект';
+  document.dispatchEvent(new CustomEvent('athena-project-changed'));
 }
 function renderAuto(state) {
   if(!state)return;autoState=state;
@@ -827,6 +828,7 @@ $('#function-search-form').onsubmit=async e=>{
   }catch(e){if(request===functionSearchVersion)panel.textContent=e.message;}
 };
 async function openFunctionResult(item){
+  document.dispatchEvent(new CustomEvent('athena-open-code'));
   if(!nodes.has(item.owner_id)){toast('Проект изменился. Повторите поиск.');return;}
   selectNode(item.owner_id,'code');$('#files').value=item.file_id;await loadFile();
   if(!file||currentFileId!==item.file_id||file.hash!==item.file_hash){toast('Исходник изменился после индексации. Обновите проект и повторите поиск.');return;}
@@ -848,9 +850,31 @@ async function showFunctionContext(id){
 
 initialize();
 setInterval(pollAuto, 2000);
-let aiSettings=null,aiJob=null,aiViewVersion=0,aiTimer=null;
-$('#rail-ai').onclick=()=>{$('#ai-panel').hidden=false;$('#function-search-panel').hidden=true;$('#changes-panel').hidden=true;$('#ai-question').focus();};
+let aiSettings=null,aiJob=null,aiViewVersion=0,aiTimer=null,aiEngine='ai';
+const aiJobPath=()=>aiEngine==='agent'?'agent/':'ai/';
+function questionAgentView(job){
+  return {...job,kind:'agent',sources:[],warnings:[],
+    status:job.transport_pending&&job.status==='running'?'running':job.status==='stopped'?'error':job.status,
+    error:job.error||job.phase,answer:job.answer||'',steps:job.steps||[]};
+}
+$('#rail-ai').onclick=()=>{$('main').scrollTop=0;$('#ai-panel').hidden=false;$('#function-search-panel').hidden=true;$('#changes-panel').hidden=true;$('#ai-question').focus({preventScroll:true});};
 $('#ai-close').onclick=()=>{$('#ai-panel').hidden=true;};
+const aiCapabilities=document.createElement('dialog');aiCapabilities.id='ai-capabilities';
+aiCapabilities.innerHTML='<div class="dialog-title"><h2>Функции помощника</h2><button type="button" aria-label="Закрыть список функций">×</button></div><p class="muted">Вопрос по коду: инструменты чтения. Агент кода: исследование или предложения в отдельном наборе. Создание набора выполняется автоматически; загрузка в 1С остаётся действием пользователя.</p><p id="ai-capabilities-status" role="status"></p><div id="ai-capabilities-list"></div>';
+document.body.append(aiCapabilities);aiCapabilities.querySelector('button').onclick=()=>aiCapabilities.close();
+$('#ai-capabilities-open').onclick=async()=>{
+  aiCapabilities.showModal();$('#ai-capabilities-status').textContent='Загружаем доступные функции…';$('#ai-capabilities-list').replaceChildren();
+  try{
+    const catalog=await api('agent/tools');
+    $('#ai-capabilities-status').textContent=`${catalog.tools.length} функций · ${(catalog.modes?.analyze||[]).length} доступны для вопросов и исследования`;
+    for(const tool of catalog.tools){
+      const row=document.createElement('article'),name=document.createElement('strong'),description=document.createElement('p'),mode=document.createElement('small');
+      name.textContent=tool.function.name;description.textContent=tool.function.description;
+      mode.textContent=catalog.automatic?.includes(tool.function.name)?'Автоматически при запуске предложений':catalog.modes?.analyze.includes(tool.function.name)?'Вопросы и исследование · предложения':'Агент кода · предложения';
+      row.append(name,mode,description);$('#ai-capabilities-list').append(row);
+    }
+  }catch(e){$('#ai-capabilities-status').textContent=e.message;}
+};
 $('#ai-settings-close').onclick=()=>$('#ai-settings-dialog').close();
 function aiRemoteVisibility(){let local=false;try{const host=new URL($('#ai-url').value).hostname;local=host==='localhost'||host==='[::1]'||/^127\./.test(host);}catch{}$('#ai-remote-label').hidden=local;}
 function fillAISettings(){const p=aiSettings.profiles[$('#ai-provider').value];$('#ai-url').value=p.base_url;$('#ai-model').value=p.model;$('#ai-timeout').value=p.timeout;$('#ai-budget').value=p.context_chars;$('#ai-remote').checked=p.allow_remote_code;$('#ai-key').value='';$('#ai-key').placeholder=p.has_api_key?'Ключ уже в памяти; оставьте пустым, чтобы сохранить':'Хранится только до закрытия Athena';$('#ai-clear-key').checked=false;$('#ai-model-list').replaceChildren();$('#ai-settings-status').textContent='Настройки обоих подключений сохраняются отдельно. API-ключ не записывается на диск.';aiRemoteVisibility();}
@@ -860,14 +884,145 @@ $('#ai-settings-open').onclick=async()=>{try{aiSettings=await api('ai/settings')
 async function saveAISettings(){const data={provider:$('#ai-provider').value,base_url:$('#ai-url').value,model:$('#ai-model').value,timeout:Number($('#ai-timeout').value),context_chars:Number($('#ai-budget').value),allow_remote_code:$('#ai-remote').checked,api_key:$('#ai-key').value,clear_key:$('#ai-clear-key').checked};aiSettings=await api('ai/settings',data);$('#ai-key').value='';$('#ai-clear-key').checked=false;return aiSettings;}
 $('#ai-settings-form').onsubmit=async e=>{e.preventDefault();try{await saveAISettings();$('#ai-settings-dialog').close();toast('Подключение AI сохранено');}catch(e){$('#ai-settings-status').textContent=e.message;}};
 $('#ai-test').onclick=async()=>{const button=$('#ai-test');button.disabled=true;$('#ai-settings-status').textContent='Проверка соединения…';try{if(!$('#ai-settings-form').reportValidity())return;await saveAISettings();const result=await api('ai/models',{});$('#ai-model-list').replaceChildren();for(const name of result.models){const option=document.createElement('option');option.value=name;$('#ai-model-list').append(option);}if(!$('#ai-model').value&&result.models.length===1)$('#ai-model').value=result.models[0];$('#ai-settings-status').textContent=result.message+` Доступно моделей: ${result.models.length}. Выберите модель и сохраните настройки.`;}catch(e){$('#ai-settings-status').textContent=e.message;}finally{button.disabled=false;}};
-function setAIBusy(busy){$('#ai-answer-button').disabled=$('#ai-context-button').disabled=busy;$('#ai-cancel-button').hidden=!busy;}
-function resetAIView(){++aiViewVersion;clearTimeout(aiTimer);if(aiJob)api('ai/cancel',{id:aiJob}).catch(()=>{});aiJob=null;setAIBusy(false);$('#ai-answer').replaceChildren();$('#ai-sources').replaceChildren();$('#ai-warnings').textContent='';$('#ai-status').textContent='';}
-function aiSourceButton(source,label){const button=document.createElement('button');button.textContent=label;button.onclick=()=>openFunctionResult({...source,declaration_line:source.start_line});return button;}
-function renderAIJob(job){$('#ai-status').textContent=job.status==='error'?job.error:job.status==='cancelled'?'Запрос отменён. Сервер может завершить обработку позднее.':job.status==='running'?job.phase:job.kind==='answer'?`Ответ · ${job.model} · ${job.sources.length} источников`:'Контекст проекта · без генерации ответа';$('#ai-warnings').textContent=(job.warnings||[]).join('\n');const answer=$('#ai-answer');answer.replaceChildren();const sourceMap=new Map((job.sources||[]).map(s=>[s.label,s]));for(const part of (job.answer||'').split(/(\[S\d+\])/)){const source=sourceMap.get(part.slice(1,-1));answer.append(source?aiSourceButton(source,part):document.createTextNode(part));}const sources=$('#ai-sources');sources.replaceChildren();for(const source of job.sources||[]){const card=document.createElement('article');card.className='function-result';card.append(aiSourceButton(source,`[${source.label}] ${source.name} · строки ${source.start_line}–${source.end_line}`));const location=document.createElement('small');location.textContent=source.path+(source.reason==='search'?' · найден поиском':' · связанный метод: '+source.reason)+(source.truncated?' · фрагмент':'');const details=document.createElement('details'),summary=document.createElement('summary'),code=document.createElement('pre');summary.textContent='Посмотреть контекст';code.textContent=source.code;details.append(summary,code);card.append(location,details);sources.append(card);}}
-async function askAI(contextOnly){if(!$('#ai-question-form').reportValidity())return;const version=++aiViewVersion;clearTimeout(aiTimer);setAIBusy(true);$('#ai-status').textContent='Поиск контекста…';$('#ai-answer').replaceChildren();$('#ai-sources').replaceChildren();$('#ai-warnings').textContent='';try{const started=await api('ai/ask',{question:$('#ai-question').value,context_only:contextOnly});if(version!==aiViewVersion){api('ai/cancel',{id:started.id}).catch(()=>{});return;}aiJob=started.id;async function poll(){try{const job=await api('ai/job?id='+encodeURIComponent(started.id));if(version!==aiViewVersion)return;renderAIJob(job);if(job.status==='running')aiTimer=setTimeout(poll,1000);else{aiJob=null;setAIBusy(false);}}catch(e){if(version===aiViewVersion){$('#ai-status').textContent=e.message;setAIBusy(false);}}}await poll();}catch(e){if(version===aiViewVersion){$('#ai-status').textContent=e.message;setAIBusy(false);}}}
+function setAIBusy(busy){$('#ai-answer-button').disabled=$('#ai-context-button').disabled=busy;$('#ai-cancel-button').hidden=!busy;$('#ai-question-form').setAttribute('aria-busy',String(busy));}
+function resetAIView(){++aiViewVersion;clearTimeout(aiTimer);if(aiJob)api(aiJobPath()+'cancel',{id:aiJob}).catch(()=>{});aiJob=null;setAIBusy(false);$('#ai-answer').replaceChildren();$('#ai-sources').replaceChildren();$('#ai-warnings').textContent='';$('#ai-status').textContent='';$('#ai-response').hidden=true;aiAnswerText='';}
+// Render only supported Markdown into DOM nodes. Model text is never HTML.
+function renderAIMarkdown(container,markdown,sources=new Map()){
+  const inline=(parent,text,depth=0)=>{
+    if(depth>12){parent.append(document.createTextNode(text));return;}
+    const pattern=/\\[\\`*_\[\]~]|(`+)([^\n]*?)\1|\[S\d+\]|\*\*([^\n]+?)\*\*|__([^\n]+?)__|~~([^\n]+?)~~|(?<!\*)\*([^*\n]+?)\*(?!\*)|(?<!\w)_([^_\n]+?)_(?!\w)|\[([^\]\n]+)\]\(([^\s)]+)\)/g;
+    let offset=0;
+    for(const match of text.matchAll(pattern)){
+      parent.append(document.createTextNode(text.slice(offset,match.index)));
+      const token=match[0];let element;
+      if(token.startsWith('\\'))parent.append(document.createTextNode(token.slice(1)));
+      else if(match[1]){element=document.createElement('code');element.textContent=match[2];parent.append(element);}
+      else if(/^\[S\d+\]$/.test(token)){
+        const source=sources.get(token.slice(1,-1));
+        parent.append(source?aiSourceButton(source,token.slice(1,-1)):document.createTextNode(token));
+      }else if(match[3]||match[4]||match[5]||match[6]||match[7]){
+        element=document.createElement(match[3]||match[4]?'strong':match[5]?'del':'em');
+        inline(element,match[3]||match[4]||match[5]||match[6]||match[7],depth+1);parent.append(element);
+      }else{
+        // External links remain deliberate user actions; embedded images are not loaded.
+        let url;try{url=new URL(match[9]);}catch{}
+        if(url&&['http:','https:'].includes(url.protocol)){
+          element=document.createElement('a');element.href=url.href;element.target='_blank';element.rel='noopener noreferrer';element.textContent=match[8];parent.append(element);
+        }else parent.append(document.createTextNode(match[8]));
+      }
+      offset=match.index+token.length;
+    }
+    parent.append(document.createTextNode(text.slice(offset)));
+  };
+  const item=line=>line.match(/^(\s*)([-+*]|\d+[.)])\s+(.+)$/);
+  const indent=match=>match[1].replace(/\t/g,'    ').length;
+  const fence=line=>line.match(/^\s*(`{3,}|~{3,})([\w+-]*)\s*$/);
+  const divider=line=>/^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/.test(line);
+  const tableDivider=line=>/^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(line);
+  const cells=line=>line.trim().replace(/^\||\|$/g,'').split(/(?<!\\)\|/).map(v=>v.trim().replace(/\\\|/g,'|'));
+  const blocks=(parent,lines,depth=0)=>{
+    if(depth>12){parent.append(document.createTextNode(lines.join('\n')));return;}
+    let i=0;
+    const list=start=>{
+      const first=item(lines[start]),base=indent(first),ordered=/\d/.test(first[2]);
+      const el=document.createElement(ordered?'ol':'ul');let pos=start;
+      if(ordered)el.start=Number(first[2].replace(/\D/g,''));
+      while(pos<lines.length){
+        const current=item(lines[pos]);
+        if(!current||indent(current)!==base||/\d/.test(current[2])!==ordered)break;
+        const li=document.createElement('li');inline(li,current[3]);pos++;
+        while(pos<lines.length){
+          const nested=item(lines[pos]);
+          if(nested&&indent(nested)>base){const next=list(pos);li.append(next.element);pos=next.end;}
+          else if(!nested&&lines[pos].trim()&&lines[pos].match(/^\s*/)[0].length>base){li.append(document.createTextNode(' '));inline(li,lines[pos].trim());pos++;}
+          else if(!lines[pos].trim()&&item(lines[pos+1]||'')&&indent(item(lines[pos+1]))>=base)pos++;
+          else break;
+        }
+        el.append(li);
+      }
+      return {element:el,end:pos};
+    };
+    while(i<lines.length){
+      const line=lines[i];if(!line.trim()){i++;continue;}
+      const opening=fence(line),heading=line.match(/^\s{0,3}(#{1,6})\s+(.+?)(?:\s+#+)?$/);
+      if(opening){
+        const codeLines=[];i++;
+        while(i<lines.length){const closing=fence(lines[i]);if(closing&&closing[1][0]===opening[1][0]&&closing[1].length>=opening[1].length){i++;break;}codeLines.push(lines[i++]);}
+        const block=document.createElement('div');block.className='ai-code-block';
+        const bar=document.createElement('div');bar.className='ai-code-heading';
+        const language=document.createElement('span');language.textContent=opening[2]||'Код';
+        const copy=document.createElement('button');copy.type='button';copy.textContent='Копировать';copy.setAttribute('aria-label','Копировать блок кода');
+        copy.onclick=async()=>{try{await navigator.clipboard.writeText(codeLines.join('\n'));copy.textContent='Скопировано';}catch{toast('Не удалось скопировать код');}};
+        const pre=document.createElement('pre'),code=document.createElement('code');code.textContent=codeLines.join('\n');pre.append(code);bar.append(language,copy);block.append(bar,pre);parent.append(block);continue;
+      }
+      if(heading){const h=document.createElement('h'+heading[1].length);inline(h,heading[2]);parent.append(h);i++;continue;}
+      if(divider(line)){parent.append(document.createElement('hr'));i++;continue;}
+      if(/^\s*>/.test(line)){
+        const quote=[];while(i<lines.length&&/^\s*>/.test(lines[i]))quote.push(lines[i++].replace(/^\s*>\s?/,''));
+        const el=document.createElement('blockquote');blocks(el,quote,depth+1);parent.append(el);continue;
+      }
+      if(item(line)){const result=list(i);parent.append(result.element);i=result.end;continue;}
+      if(line.includes('|')&&i+1<lines.length&&tableDivider(lines[i+1])){
+        const wrapper=document.createElement('div');wrapper.className='ai-table-scroll';
+        const table=document.createElement('table'),head=document.createElement('thead'),body=document.createElement('tbody');
+        const row=(values,header)=>{const tr=document.createElement('tr');for(const value of values){const cell=document.createElement(header?'th':'td');if(header)cell.scope='col';inline(cell,value);tr.append(cell);}return tr;};
+        head.append(row(cells(line),true));i+=2;
+        while(i<lines.length&&lines[i].trim()&&lines[i].includes('|'))body.append(row(cells(lines[i++]),false));
+        table.append(head,body);wrapper.append(table);parent.append(wrapper);continue;
+      }
+      const paragraph=[line.trim()];i++;
+      while(i<lines.length&&lines[i].trim()&&!fence(lines[i])&&!/^\s{0,3}#{1,6}\s/.test(lines[i])&&!/^\s*>/.test(lines[i])&&!item(lines[i])&&!divider(lines[i])&&!(lines[i].includes('|')&&i+1<lines.length&&tableDivider(lines[i+1])))paragraph.push(lines[i++].trim());
+      const p=document.createElement('p');inline(p,paragraph.join(' '));parent.append(p);
+    }
+  };
+  const content=document.createDocumentFragment();blocks(content,String(markdown||'').replace(/\r\n?/g,'\n').split('\n'));container.replaceChildren(content);
+}
+let aiAnswerText='';
+$('#ai-copy-answer').onclick=async()=>{try{await navigator.clipboard.writeText(aiAnswerText);toast('Ответ скопирован');}catch{toast('Не удалось скопировать ответ');}};
+$('.ai-tools').addEventListener('click',event=>{if(event.target.closest('button,a'))$('.ai-tools').open=false;});
+function aiSourceButton(source,label){
+  const button=document.createElement('button');button.type='button';button.className='ai-citation';button.textContent=label;button.title=source.name+' · '+source.path;
+  button.onclick=async()=>{
+    document.dispatchEvent(new CustomEvent('athena-open-code'));
+    if(source.type!=='metadata')return openFunctionResult({...source,declaration_line:source.start_line});
+    try{
+      const state=await api('knowledge');
+      if(state.snapshot!==source.snapshot||!nodes.has(source.object_id)){toast('Проект изменился. Повторите вопрос.');return;}
+      selectNode(source.object_id,'overview');$('#ai-panel').hidden=true;
+    }catch(e){toast(e.message);}
+  };
+  return button;
+}
+function renderAIJob(job){
+  $('#ai-response').hidden=false;$('#ai-response').dataset.state=job.status;
+  $('#ai-status').textContent=job.status==='error'?job.error:job.status==='cancelled'?'Запрос отменён. Сервер может завершить обработку позднее.':job.status==='running'?job.phase:job.kind==='metadata'?`Ответ по метаданным · ${job.inventory_total} объектов · ${job.inventory_complete?'полный список':'показана часть списка'}`:job.kind==='agent'?`Ответ · ${job.model} · ${job.tool_calls} вызовов инструментов`:job.kind==='answer'?`Ответ · ${job.model} · ${job.sources.length} источников`:'Контекст проекта · без генерации ответа';
+  $('#ai-steps-panel').hidden=!(job.steps||[]).length;
+  $('#ai-steps').replaceChildren();
+  for(const step of job.steps||[]){const li=document.createElement('li');li.textContent=`${step.ok?'✓':'⚠'} ${step.tool} · ${step.detail}`;$('#ai-steps').append(li);}
+  $('#ai-warnings').textContent=(job.warnings||[]).join('\n');
+  const answer=$('#ai-answer');aiAnswerText=job.answer||'';$('#ai-copy-answer').hidden=!aiAnswerText;
+  const sourceMap=new Map((job.sources||[]).map(s=>[s.label,s]));
+  renderAIMarkdown(answer,aiAnswerText,sourceMap);
+  $('#ai-sources-panel').hidden=!(job.sources||[]).length;$('#ai-source-count').textContent=(job.sources||[]).length||'';
+  const sources=$('#ai-sources');sources.replaceChildren();
+  for(const source of job.sources||[]){
+    const metadata=source.type==='metadata';
+    const card=document.createElement('article');card.className='function-result';
+    const name=aiSourceButton(source,`${source.name}`);name.className='ai-source-name';
+    const badge=document.createElement('span');badge.className='ai-source-badge';badge.textContent=source.label;
+    const heading=document.createElement('div');heading.className='ai-source-heading';heading.append(badge,name);card.append(heading);
+    const location=document.createElement('small');
+    location.textContent=source.path+(metadata?' · метаданные':` · строки ${source.start_line}–${source.end_line}`)+(source.truncated?' · фрагмент':'');
+    const details=document.createElement('details'),summary=document.createElement('summary'),code=document.createElement('pre');
+    summary.textContent='Посмотреть контекст';code.textContent=source.code;
+    details.append(summary,code);card.append(location,details);sources.append(card);
+  }
+  document.dispatchEvent(new CustomEvent('athena-ai-rendered',{detail:job}));
+}
+async function askAI(contextOnly){if(!$('#ai-question-form').reportValidity())return;const version=++aiViewVersion;clearTimeout(aiTimer);setAIBusy(true);$('#ai-response').hidden=false;$('#ai-response').dataset.state='running';$('#ai-copy-answer').hidden=true;$('#ai-sources-panel').hidden=true;$('#ai-steps-panel').hidden=true;$('#ai-status').textContent='Подготовка запроса…';$('#ai-answer').replaceChildren();$('#ai-sources').replaceChildren();$('#ai-warnings').textContent='';try{const started=await api(contextOnly?'ai/ask':'assistant/ask',{question:$('#ai-question').value,context_only:contextOnly});const engine=started.engine||'ai',path=engine==='agent'?'agent/':'ai/';if(version!==aiViewVersion){api(path+'cancel',{id:started.id}).catch(()=>{});return;}aiEngine=engine;aiJob=started.id;async function poll(){try{const job=await api(path+'job?id='+encodeURIComponent(started.id));if(version!==aiViewVersion)return;renderAIJob(engine==='agent'?questionAgentView(job):job);if(job.status==='running'||job.transport_pending)aiTimer=setTimeout(poll,1000);else{aiJob=null;setAIBusy(false);}}catch(e){if(version===aiViewVersion){$('#ai-status').textContent=e.message;setAIBusy(false);}}}await poll();}catch(e){if(version===aiViewVersion){$('#ai-status').textContent=e.message;setAIBusy(false);}}}
 $('#ai-question-form').onsubmit=e=>{e.preventDefault();askAI(false);};
 $('#ai-context-button').onclick=()=>askAI(true);
-$('#ai-cancel-button').onclick=async()=>{if(!aiJob)return;try{const job=await api('ai/cancel',{id:aiJob});renderAIJob(job);++aiViewVersion;clearTimeout(aiTimer);aiJob=null;setAIBusy(false);}catch(e){toast(e.message);}};
+$('#ai-cancel-button').onclick=async()=>{if(!aiJob)return;try{const job=await api(aiJobPath()+'cancel',{id:aiJob});renderAIJob(aiEngine==='agent'?questionAgentView(job):job);++aiViewVersion;clearTimeout(aiTimer);aiJob=null;setAIBusy(false);}catch(e){toast(e.message);}};
 
 function updateIndexProgress(job){
   const panel=$('#index-progress');panel.hidden=job.status!=='running';if(panel.hidden)return;
@@ -889,3 +1044,163 @@ indexSettingsForm.elements.mode.onchange=()=>{const defaults=indexSettingsForm.e
 indexSettingsForm.onsubmit=async(event)=>{event.preventDefault();const config={};for(const key of ['device','mode','threads','batch_size','token_budget','gpu_memory_mb','pause_ms'])config[key]=['device','mode'].includes(key)?indexSettingsForm.elements[key].value:Number(indexSettingsForm.elements[key].value);try{const state=await api('embedding-settings');if(state.running)throw new Error('Приостановите индексацию и дождитесь остановки, затем сохраните настройки.');await api('embeddings',{enabled:false,settings:config});$('#index-settings').close();await updateKnowledgeStatus();toast('Настройки индексации сохранены');}catch(e){$('#index-settings-notice').textContent=e.message;}};
 
 $("#ai-index-settings-open").onclick=()=>$("#index-settings-open").onclick();
+
+// Main workspace follows the home / code / documentation layout.
+(()=>{
+  const workspace=$('.workspace'),main=$('main');
+  let page='home',history=[],latestSources=[],refreshing=false;
+  const historyKey='athena-question-history-v1';
+  try{const saved=JSON.parse(localStorage.getItem(historyKey)||'[]');if(Array.isArray(saved))history=saved.filter(x=>x&&typeof x.question==='string'&&typeof x.id==='string'&&typeof x.project==='string'&&Number.isFinite(x.time)&&['ai','agent'].includes(x.engine)).slice(0,30);}catch{}
+  const projectKey=()=>connectionData.active||project?.root||'';
+  const titles={home:'Главная',code:'Код',docs:'Документация',history:'История',assistant:'AI-помощник'};
+  const navIds={home:'rail-ai',code:'rail-objects',docs:'nav-docs',history:'nav-history',assistant:'nav-assistant'};
+  const scope=document.createElement('select');scope.id='question-scope';scope.setAttribute('aria-label','Область вопроса');
+  const scopeOption=document.createElement('option');scopeOption.textContent='Текущая конфигурация';scopeOption.value='current';scope.append(scopeOption);
+  $('.ai-actions').prepend(scope);$('.ai-composer-hint').hidden=true;
+  $('#ai-panel .ai-header h2').textContent='Вопрос по конфигурации';
+  $('#ai-panel .ai-eyebrow').textContent='ATHENA ASSISTANT';
+  $('#ai-panel .ai-body>p').textContent='Задайте вопрос — Athena найдёт ответ в метаданных и коде вашего проекта.';
+  $('#ai-question').placeholder='Введите вопрос по конфигурации…';$('#ai-answer-button').textContent='Спросить';
+  const shortcuts=document.createElement('div');shortcuts.className='home-shortcuts';
+  shortcuts.innerHTML='<button type="button" data-prompt="Объясни назначение основных методов конфигурации и укажи, в каких модулях они находятся.">Объяснить метод <span>↗</span></button><button type="button" data-prompt="Объясни связи между документами и справочниками конфигурации. Приведи подтверждения из метаданных и кода.">Связи <span>↗</span></button>';
+  const contextButton=$('#ai-context-button');contextButton.textContent='Найти данные';contextButton.title='Найти контекст для введённого вопроса без генерации ответа';shortcuts.insertBefore(contextButton,shortcuts.lastElementChild);
+  $('#ai-question-form').after(shortcuts);
+  shortcuts.addEventListener('click',e=>{const b=e.target.closest('[data-prompt]');if(b){$('#ai-question').value=b.dataset.prompt;$('#ai-question').focus();}});
+  const sections=document.createElement('div');sections.className='home-dashboard-sections';
+  sections.innerHTML='<section class="dashboard-section"><div class="dashboard-section-heading"><h2>Последние вопросы</h2><button type="button" id="home-all-history">Вся история <span>↗</span></button></div><div id="home-recent-questions" class="question-list"></div></section><section class="dashboard-section"><div class="dashboard-section-heading"><h2>Документация</h2><span class="section-caption">СПРАВКА И МЕТАДАННЫЕ</span></div><a class="dashboard-document" href="http://127.0.0.1:8767/" target="_blank" rel="noopener"><span class="document-icon" aria-hidden="true">▤</span><span><strong>Справка платформы 1С</strong><small>Типы, методы и свойства платформы</small></span><span class="document-open">Открыть ↗</span></a></section>';
+  $('.ai-body').append(sections);
+  const views=document.createElement('div');views.id='dashboard-views';views.hidden=true;
+  views.innerHTML='<section id="dashboard-docs" hidden><span class="page-eyebrow">БАЗА ЗНАНИЙ</span><h1>Документация</h1><p class="page-description">Справка платформы и структура сохранённой конфигурации.</p><a class="dashboard-document" href="http://127.0.0.1:8767/" target="_blank" rel="noopener"><span class="document-icon">▤</span><span><strong>Синтаксис-помощник 1С</strong><small>Справка по импортированной версии платформы</small></span><span class="document-open">Открыть ↗</span></a><button type="button" id="docs-open-configuration" class="dashboard-document"><span class="document-icon">⌘</span><span><strong>Структура конфигурации</strong><small>Объекты, реквизиты, табличные части и модули</small></span><span class="document-open">Открыть ↗</span></button></section><section id="dashboard-history" hidden><span class="page-eyebrow">РАБОТА С ПРОЕКТОМ</span><h1>История</h1><p class="page-description">Вопросы по текущей конфигурации. Выберите запись, чтобы открыть сохранённый ответ.</p><div id="dashboard-history-list" class="question-list"></div></section>';
+  const imports=document.createElement('section');imports.className='documentation-imports';
+  imports.innerHTML='<h2>Материалы проекта</h2><div class="documentation-import-grid"><article class="documentation-import-card"><div class="import-card-heading"><span class="import-card-icon" aria-hidden="true">⌘</span><span class="coming-soon-badge">Скоро</span></div><h3>Git-проект</h3><p>Подключение репозитория с исходным кодом проекта.</p><label for="documentation-git-url">Адрес репозитория</label><input id="documentation-git-url" type="url" disabled placeholder="https://github.com/organization/project"><button type="button" disabled>Загрузить Git-проект</button><small>Подключение Git пока недоступно.</small></article><article class="documentation-import-card"><div class="import-card-heading"><span class="import-card-icon" aria-hidden="true">▤</span><span class="coming-soon-badge">Скоро</span></div><h3>Документация проекта</h3><p>Загрузка описаний, инструкций и других документов проекта.</p><div class="documentation-drop-placeholder"><span aria-hidden="true">↑</span><strong>Файлы документации</strong><small>Здесь можно будет выбрать файлы для загрузки</small></div><button type="button" disabled>Загрузить документацию</button><small>Загрузка файлов пока недоступна.</small></article></div>';
+  views.querySelector('#dashboard-docs .page-description').after(imports);
+  main.append(views);
+  const panel=document.createElement('aside');panel.id='project-panel';panel.setAttribute('aria-label','Сведения о проекте');
+  panel.innerHTML='<div class="project-panel-heading"><h2>Проект</h2><span class="project-chip">1С</span></div><div class="project-name"><span class="project-avatar">A</span><div><strong id="dashboard-project-name">Конфигурация не открыта</strong><small id="dashboard-project-subtitle">Выберите файловую выгрузку</small></div></div><div class="project-status-block"><div class="status-title">Статус индекса <i id="dashboard-index-dot" class="status-dot"></i></div><strong id="dashboard-index-status">Ожидает проекта</strong><div class="status-track"><span id="dashboard-index-progress"></span></div><small id="dashboard-index-details">Метаданные и код</small></div><div class="project-status-block"><div class="status-title">Статус модели <i id="dashboard-model-dot" class="status-dot"></i></div><strong id="dashboard-model-status">Проверяем настройки…</strong><small id="dashboard-model-details"></small><button type="button" id="dashboard-model-settings" class="text-action">Настроить подключение ↗</button></div><div class="project-status-block"><div class="status-title">Локальная обработка <i class="status-dot ready"></i></div><strong>Индекс на компьютере</strong><small id="dashboard-local-details">Разбор метаданных и BSL выполняется локально.</small></div><section class="project-source-section"><h3>Ссылки на исходный код</h3><div id="dashboard-source-links"></div><button type="button" id="dashboard-browse-code" class="text-action">Открыть конфигурацию ↗</button></section><div class="project-panel-footnote"><span>⌘</span> Ответы можно проверить по исходникам проекта.</div>';
+  workspace.append(panel);
+  function setPage(value){
+    page=value;document.body.dataset.page=value;
+    $('#page-title').textContent=titles[value];
+    for(const [name,id] of Object.entries(navIds)){const b=$('#'+id);b.classList.toggle('active',name===value);if(name===value)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current');}
+    $('#rail-search').classList.remove('active');$('#rail-changes').classList.remove('active');$('#nav-agent').classList.remove('active');$('#nav-agent').removeAttribute('aria-current');
+    $('#ai-panel').hidden=!['home','assistant'].includes(value);$('#dashboard-views').hidden=!['docs','history'].includes(value);
+    for(const name of ['docs','history'])$('#dashboard-'+name).hidden=value!==name;
+    if(value!=='code'){$('#function-search-panel').hidden=true;$('#changes-panel').hidden=true;}
+    if(['home','assistant'].includes(value)){$('.ai-mode-tabs button')?.click();}
+    main.scrollTop=0;
+  }
+  $('#rail-ai').addEventListener('click',()=>{setPage('home');refresh();});
+  $('#rail-objects').addEventListener('click',()=>setPage('code'));
+  $('#nav-assistant').onclick=()=>{setPage('assistant');$('#ai-question').focus({preventScroll:true});refresh();};
+  $('#nav-agent').onclick=()=>{setPage('assistant');$('.ai-mode-tabs button:last-child')?.click();$('#nav-agent').classList.add('active');$('#nav-agent').setAttribute('aria-current','page');$('#nav-assistant').classList.remove('active');$('#nav-assistant').removeAttribute('aria-current');$('#page-title').textContent='Агент кода';};
+  for(const name of ['docs','history'])$('#nav-'+name).onclick=()=>{setPage(name);if(name==='history')loadHistory();};
+  $('#rail-search').addEventListener('click',()=>{setPage('code');$('#function-search-panel').hidden=false;$('#rail-search').classList.add('active');});
+  $('#rail-changes').addEventListener('click',()=>{setPage('code');$('#changes-panel').hidden=false;$('#rail-changes').classList.add('active');});
+  $('#ai-close').addEventListener('click',()=>setPage('code'));
+  $('#docs-open-configuration').onclick=$('#dashboard-browse-code').onclick=()=>setPage('code');
+  $('#home-all-history').onclick=()=>{setPage('history');loadHistory();};
+  document.addEventListener('athena-open-code',()=>setPage('code'));
+  document.addEventListener('athena-project-changed',()=>{latestSources=[];refresh();loadHistory();});
+  $('#dashboard-model-settings').onclick=()=>$('#ai-settings-open').click();
+  $('#configuration-switch').onchange=e=>{if(e.target.value&&e.target.value!==project?.root)openProject(e.target.value);};
+  const settings=document.createElement('dialog');settings.id='workspace-settings-menu';
+  settings.innerHTML='<div class="dialog-title"><h2>Настройки</h2><button type="button" aria-label="Закрыть настройки рабочего пространства">×</button></div><p class="muted">Подключение модели и параметры рабочего места</p><button type="button" data-target="ai-settings-open">Подключение AI-модели <span>↗</span></button><button type="button" data-target="index-settings-open">Индексация проекта <span>↗</span></button><button type="button" data-target="auto-settings">Автообновление конфигурации <span>↗</span></button><a href="/setup">Настройка рабочего места <span>↗</span></a>';
+  document.body.append(settings);settings.querySelector('.dialog-title button').onclick=()=>settings.close();
+  settings.addEventListener('click',e=>{const b=e.target.closest('[data-target]');if(b){settings.close();$('#'+b.dataset.target).click();}});
+  $('#nav-settings').onclick=()=>settings.showModal();
+  function saveHistory(){try{localStorage.setItem(historyKey,JSON.stringify(history.slice(0,30)));}catch{}}
+  function currentHistory(){return history.filter(x=>x.project===projectKey()).sort((a,b)=>b.time-a.time);}
+  function renderHistory(){
+    for(const [id,limit] of [['home-recent-questions',2],['dashboard-history-list',30]]){
+      const list=$('#'+id);list.replaceChildren();const rows=currentHistory().slice(0,limit);
+      if(!rows.length){const empty=document.createElement('p');empty.className='dashboard-empty';empty.textContent=project?'Здесь появятся ваши вопросы по этой конфигурации.':'Откройте проект, чтобы задавать вопросы по конфигурации.';list.append(empty);continue;}
+      for(const item of rows){const b=document.createElement('button');b.type='button';b.className='question-row';const text=document.createElement('span'),name=document.createElement('strong'),caption=document.createElement('small'),arrow=document.createElement('span');name.textContent=item.question;caption.textContent=new Date(item.time).toLocaleString('ru',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})+' · '+(item.engine==='agent'?'Исследование проекта':'Метаданные конфигурации');text.append(name,caption);arrow.textContent='›';arrow.className='question-arrow';b.append(text,arrow);b.onclick=()=>openHistory(item);list.append(b);}
+    }
+  }
+  async function openHistory(item){
+    if(aiJob){toast('Дождитесь завершения текущего вопроса.');return;}
+    setPage('assistant');$('#ai-question').value=item.question;
+    try{const job=await api((item.engine==='agent'?'agent/':'ai/')+'job?id='+encodeURIComponent(item.id));if(item.project!==projectKey())return;renderAIJob(item.engine==='agent'?questionAgentView(job):job);}
+    catch{$('#ai-response').hidden=true;toast('Вопрос выбран. Нажмите «Спросить», чтобы получить новый ответ.');}
+  }
+  async function loadHistory(){
+    const key=projectKey();if(!key){renderHistory();return;}
+    try{const status=await api('agent/status');if(key!==projectKey())return;for(const job of status.jobs){if(job.context.project!==key||job.mode!=='analyze'||job.status==='running')continue;if(!history.some(x=>x.id===job.id))history.push({id:job.id,engine:'agent',question:job.goal,project:key,time:job.created*1000});}history.sort((a,b)=>b.time-a.time);history=history.slice(0,30);saveHistory();}catch{}
+    renderHistory();
+  }
+  function sourceLinks(){
+    const links=$('#dashboard-source-links');links.replaceChildren();
+    for(const source of latestSources.slice(0,4)){const b=aiSourceButton(source,source.name);b.className='dashboard-source-link';const path=document.createElement('small');path.textContent=source.path;b.append(path);links.append(b);}
+    if(!latestSources.length){const p=document.createElement('p');p.textContent=project?'Здесь появятся источники ответа помощника. Все объекты доступны в разделе «Код».':'Исходники появятся после открытия конфигурации.';links.append(p);}
+  }
+  document.addEventListener('athena-ai-rendered',e=>{
+    const job=e.detail;latestSources=job.sources||[];sourceLinks();
+    if(job.status==='running'||(!job.answer&&!job.goal&&!job.question))return;
+    const key=projectKey();const item={id:job.id,engine:job.kind==='agent'?'agent':'ai',question:job.question||job.goal||$('#ai-question').value,project:key,time:(job.created||Date.now()/1000)*1000};
+    if(!history.some(x=>x.id===item.id)){history.unshift(item);history=history.slice(0,30);saveHistory();renderHistory();}
+  });
+  async function refresh(){
+    if(refreshing)return;refreshing=true;
+    try{
+      const results=await Promise.allSettled([api('knowledge'),api('ai/settings'),api('state')]);
+      const root=project&&nodes.get(project.configuration);$('#dashboard-project-name').textContent=root?.name||'Конфигурация не открыта';$('#dashboard-project-subtitle').textContent=project?`${plural(project.stats.objects,['объект','объекта','объектов'])} · ${plural(project.stats.modules,['модуль','модуля','модулей'])}`:'Выберите файловую выгрузку';
+      const select=$('#configuration-switch');select.replaceChildren();const paths=new Set(project?[project.root]:[]);if(results[2].status==='fulfilled')for(const path of results[2].value.recent||[])paths.add(path);
+      if(!paths.size){const o=document.createElement('option');o.textContent='Конфигурация не открыта';o.value='';select.append(o);}
+      for(const path of paths){const o=document.createElement('option');o.value=path;o.textContent=path===project?.root?(root?.name||'Текущая конфигурация'):path.split(/[\\/]/).slice(-2).join(' / ');o.title=path;select.append(o);}if(project)select.value=project.root;
+      if(results[0].status==='fulfilled'){
+        const k=results[0].value,semantic=k.semantic;$('#dashboard-index-status').textContent=k.ready?'Основной индекс готов':'Ожидает индексации';$('#dashboard-index-dot').classList.toggle('ready',!!k.ready);$('#dashboard-index-progress').style.width=k.ready?'100%':'0%';
+        $('#dashboard-index-details').textContent=k.ready?`${plural(k.modules,['модуль','модуля','модулей'])} · ${plural(k.symbols,['метод','метода','методов'])}`:'Откройте проект и дождитесь подготовки.';
+        if(semantic?.enabled&&semantic.total)$('#dashboard-index-details').textContent+=` · эмбеддинги ${semantic.indexed||0}/${semantic.total}`;
+      }else{$('#dashboard-index-status').textContent='Нет связи с индексом';$('#dashboard-index-dot').classList.remove('ready');}
+      if(results[1].status==='fulfilled'){
+        const a=results[1].value,p=a.profiles[a.provider];$('#dashboard-model-status').textContent=p.model||'Модель не выбрана';$('#dashboard-model-dot').classList.toggle('ready',!!p.model&&(p.local||p.has_api_key));
+        $('#dashboard-model-details').textContent=!p.model?'Подключите модель для ответов по коду.':p.local?'Локальное подключение':p.has_api_key?'API · ключ в памяти':'API · требуется ключ';
+        $('#dashboard-local-details').textContent=p.local?'Индекс и ответы обрабатываются локально.':p.allow_remote_code?'Индекс локально. Для ответов выбран внешний API.':'Локальный индекс. Отправка кода внешней модели выключена.';
+      }else{$('#dashboard-model-status').textContent='Нет связи с настройками';$('#dashboard-model-dot').classList.remove('ready');}
+      renderHistory();sourceLinks();
+    }finally{refreshing=false;}
+  }
+  document.addEventListener('visibilitychange',()=>{if(!document.hidden)refresh();});
+  setInterval(()=>{if(!document.hidden&&page!=='code')refresh();},15000);
+  setPage('home');refresh();loadHistory();
+})();
+
+
+// Collapsible workspace panels retain the existing tree, selection and scroll.
+(()=>{
+  const rail=$('.activity-rail'),tree=$('.metadata-sidebar');
+  let state={navCollapsed:false,treeCollapsed:false},savedLayout=false;
+  try{const raw=localStorage.getItem('athena-panel-layout');savedLayout=!!raw;const saved=JSON.parse(raw||'{}');if(saved&&typeof saved==='object')for(const key of Object.keys(state))if(typeof saved[key]==='boolean')state[key]=saved[key];}catch{}
+  if(!savedLayout&&matchMedia('(max-width:620px)').matches)state.navCollapsed=true;
+  for(const button of rail.querySelectorAll('button')){
+    if(!button.title)button.title=button.textContent.trim();
+    for(const node of [...button.childNodes])if(node.nodeType===Node.TEXT_NODE&&node.textContent.trim()){const label=document.createElement('span');label.className='nav-label';label.textContent=node.textContent;node.replaceWith(label);}
+    const label=button.querySelector('.nav-label')?.textContent.trim()||button.title;button.setAttribute('aria-label',label);button.title=label;
+  }
+  rail.querySelector('.nav-caption')?.remove();
+  const railHeader=document.createElement('div');railHeader.className='rail-panel-heading';
+  railHeader.innerHTML='<span>НАВИГАЦИЯ</span><button type="button" id="collapse-navigation" aria-controls="workspace-navigation" title="Свернуть меню"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m12 5-5 5 5 5"/></svg></button>';
+  rail.id='workspace-navigation';rail.prepend(railHeader);
+  const collapse=document.createElement('button');collapse.type='button';collapse.id='collapse-tree';collapse.title='Свернуть дерево конфигурации';collapse.setAttribute('aria-label','Свернуть дерево конфигурации');collapse.setAttribute('aria-controls','configuration-panel');collapse.innerHTML='<svg viewBox="0 0 20 20" aria-hidden="true"><path d="m12 5-5 5 5 5"/></svg>';
+  tree.id='configuration-panel';tree.querySelector('.aside-title').append(collapse);
+  const toggle=document.createElement('button');toggle.type='button';toggle.id='toggle-configuration-panel';toggle.setAttribute('aria-controls',tree.id);
+  toggle.innerHTML='<svg viewBox="0 0 20 20" aria-hidden="true"><rect x="3" y="3" width="14" height="14" rx="2"/><path d="M8 3v14M11 7h3M11 10h3M11 13h3"/></svg><span>Объекты</span>';
+  $('#page-title').after(toggle);
+  function render(){
+    document.body.dataset.navCollapsed=String(state.navCollapsed);document.body.dataset.treeCollapsed=String(state.treeCollapsed);
+    const navButton=$('#collapse-navigation');navButton.title=state.navCollapsed?'Развернуть меню':'Свернуть меню';navButton.setAttribute('aria-label',navButton.title);navButton.setAttribute('aria-expanded',String(!state.navCollapsed));
+    toggle.title=state.treeCollapsed?'Показать дерево конфигурации':'Скрыть дерево конфигурации';toggle.setAttribute('aria-label',toggle.title);toggle.setAttribute('aria-expanded',String(!state.treeCollapsed));
+    collapse.setAttribute('aria-expanded',String(!state.treeCollapsed));
+    tree.inert=state.treeCollapsed;
+    try{localStorage.setItem('athena-panel-layout',JSON.stringify(state));}catch{}
+  }
+  function toggleTree(){
+    if(!state.treeCollapsed&&tree.contains(document.activeElement))toggle.focus({preventScroll:true});
+    state.treeCollapsed=!state.treeCollapsed;render();
+  }
+  $('#collapse-navigation').onclick=()=>{state.navCollapsed=!state.navCollapsed;render();};
+  collapse.onclick=toggleTree;toggle.onclick=toggleTree;
+  document.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key==='\\'){e.preventDefault();state.navCollapsed=!state.navCollapsed;render();}});
+  // Hiding a panel never recreates its controls or discards unsaved code.
+  render();
+})();

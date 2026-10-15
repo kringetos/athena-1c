@@ -154,6 +154,36 @@ class Knowledge:
         self._statuses={snapshot:result}
         return dict(result)
 
+    def metadata_inventory(self, snapshot, kinds, limit=100, offset=0):
+        """List top-level metadata, including declarations without BSL modules."""
+        with self.connect() as db:
+            root = db.execute("SELECT node_id FROM metadata WHERE snapshot_id=? "
+                              "AND json_extract(data,'$.kind')='Configuration' LIMIT 1",
+                              (snapshot,)).fetchone()
+            if not root:
+                raise ValueError('Метаданные текущего снимка недоступны. Обновите проект.')
+            where = "snapshot_id=? AND json_extract(data,'$.parent')=?"
+            args = [snapshot, root['node_id']]
+            if kinds:
+                where += " AND json_extract(data,'$.kind') IN (" + ','.join('?' for _ in kinds) + ')'
+                args.extend(kinds)
+            else:
+                where += " AND json_extract(data,'$.kind') NOT IN ('Module','File')"
+            total = db.execute('SELECT count(*) FROM metadata WHERE ' + where, args).fetchone()[0]
+            rows = db.execute("SELECT data FROM metadata WHERE " + where +
+                              " ORDER BY json_extract(data,'$.kind'),json_extract(data,'$.name') "
+                              "COLLATE NOCASE LIMIT ? OFFSET ?", [*args, limit, offset]).fetchall()
+            counts = {}
+            for row in db.execute("SELECT json_extract(data,'$.parent') AS parent, "
+                                  "json_extract(data,'$.kind') AS kind, count(*) AS total "
+                                  "FROM metadata WHERE snapshot_id=? GROUP BY parent, kind", (snapshot,)):
+                counts.setdefault(row['parent'], {})[row['kind']] = row['total']
+        objects = [json.loads(row['data']) for row in rows]
+        for node in objects:
+            node['child_counts'] = None if node.get('missing') else counts.get(node['id'], {})
+        return {'objects': objects, 'total': total, 'complete': offset == 0 and len(objects) == total,
+                'requested_kinds': kinds, 'next_offset': offset+len(objects) if offset+len(objects)<total else None}
+
     @staticmethod
     def query_terms(value):
         import re

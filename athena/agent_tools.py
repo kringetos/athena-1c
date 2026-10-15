@@ -4,8 +4,9 @@ import json
 import sqlite3
 import threading
 import time
+from collections import Counter
 from contextlib import contextmanager
-from athena.catalog import canonical, read_text, text_hash
+from athena.catalog import LABELS, canonical, read_text, text_hash
 
 
 def string(limit=500): return {'type': 'string', 'minLength': 1, 'maxLength': limit}
@@ -29,6 +30,8 @@ PAGE = {'offset': integer(0, 10000000), 'limit': integer(1, 100)}
 
 def definitions():
     rows = [
+        ('get_configuration', 'Корень конфигурации и полный счётчик объектов каждого вида. Начни с этого инструмента для обзора проекта.', obj({}), False),
+        ('list_objects', 'Полный постраничный список объектов конфигурации. child_counts считает собственные реквизиты Attribute, табличные части TabularSection, измерения Dimension и ресурсы Resource напрямую из XML, независимо от наличия BSL. Стандартные и общие реквизиты и поля табличных частей не входят в Attribute. null означает отсутствующий XML. Для полного списка пройди все next_offset.', obj({'kinds': array({'type':'string','enum':list(LABELS)}, 20), **PAGE}), False),
         ('search', 'Поиск по коду, метаданным и справке выбранной платформы.', obj({'query': string(), 'scope': {'type':'string','enum':['all','code','metadata','platform']}, 'source': string(128), 'exact': {'type':'boolean'}, 'limit': integer(1, 30)}, ['query']), False),
         ('read_module', 'Читать диапазон строк BSL-модуля; возвращает хеш для правки. set_id читает черновик.', obj({'file_id':string(128), 'set_id':string(32), 'start_line':integer(1,1000000), 'line_count':integer(1,300)}, ['file_id']), False),
         ('get_object', 'Читать объект метаданных, список модулей и страницу дочерних объектов.', obj({'object_id':string(128), **PAGE}, ['object_id']), False),
@@ -153,6 +156,16 @@ class AgentTools:
         def page(rows):
             offset=a.get('offset',0); limit=a.get('limit',30)
             return {'items':bounded(rows[offset:offset+limit]),'total':len(rows),'next_offset':offset+limit if offset+limit<len(rows) else None}
+        if tool=='get_configuration':
+            root=next(n for n in catalog.nodes.values() if n['kind']=='Configuration')
+            counts=Counter(n['kind'] for n in catalog.nodes.values() if n.get('parent')==root['id'] and n['kind'] not in {'Module','File'})
+            return {'id':root['id'],'name':root['name'],'source':root['source'],
+                    'object_counts':dict(counts),'total':sum(counts.values()),'snapshot':snapshot}
+        if tool=='list_objects':
+            result=w.knowledge.metadata_inventory(snapshot,a.get('kinds',[]),a.get('limit',20),a.get('offset',0))
+            return {'items':[{k:n.get(k) for k in ['id','name','kind','source','missing','child_counts']} for n in result['objects']],
+                    'total':result['total'],'next_offset':result['next_offset'],
+                    'count_scope':'Непосредственные дочерние объекты XML; Attribute — только собственные реквизиты. Стандартные, общие и поля табличных частей не включены.'}
         if tool=='search': return bounded(w.language.search(a['query'],source=a.get('source',''),snapshot=snapshot,scope=a.get('scope','code'),exact=a.get('exact',False),limit=a.get('limit',20)))
         if tool=='read_reference':
             item=w.language.item('platform',a['page_id'],source=a['source'])
@@ -161,7 +174,8 @@ class AgentTools:
             node=catalog.nodes.get(a['object_id'])
             if not node: raise ValueError('Объект отсутствует в текущем проекте.')
             children=[n for n in catalog.nodes.values() if n.get('parent')==a['object_id']]
-            return {'node':bounded(node),'children':page(children)}
+            return {'node':bounded(node),'children':page(children),
+                    'child_counts':None if node.get('missing') else dict(Counter(n['kind'] for n in children))}
         if tool in {'get_symbol','get_calls'}:
             with w.knowledge.connect() as db:
                 row=db.execute('SELECT data FROM symbols WHERE snapshot_id=? AND id=?',(snapshot,a['symbol_id'])).fetchone()

@@ -8,7 +8,7 @@ from unittest.mock import patch
 import test_agent_tools as fixture_module
 from athena.ai import DEFAULTS
 from athena.catalog import read_text,text_hash
-from athena.code_agent import CodeAgent,model_turn,tool_catalog,protocol_for,settings
+from athena.code_agent import CodeAgent,model_turn,tool_catalog,protocol_for,settings,pack_result
 
 
 def reply(name=None,args=None,text=''):
@@ -57,6 +57,103 @@ class CodeAgentTests(unittest.TestCase):
         self.assertEqual(job['status'],'ready');self.assertIsNone(job['set_id']);self.assertFalse(job['steps'][0]['ok'])
         self.assertEqual(self.w.change_sets.list(str(self.w.catalog.root)),[])
         self.assertFalse(any(t['function']['name']=='edit_module' for t in tool_catalog('analyze')))
+
+    def test_all_supported_tools_are_exposed_and_new_objects_track_set_revision(self):
+        from athena.agent_tools import definitions
+        available={d['function']['name'] for d in definitions()}
+        self.assertEqual({t['function']['name'] for t in tool_catalog('propose')},available-{'create_change_set'})
+        self.assertEqual(len(tool_catalog('analyze')),9)
+        spec={'kind':'Catalog','name':'ПоставщикиАгента','attributes':[{'name':'ИНН','type':'String','length':12}]}
+        entry='object:Catalog:поставщикиагента'
+        responses=[reply('create_object',{'spec':spec}),
+                   reply('update_new_object',{'entry_id':entry,'spec':{**spec,'synonym':'Поставщики'}}),
+                   reply('validate_changes'),reply('prepare_changes'),reply(text='Предложен новый справочник.')]
+        with patch('athena.code_agent.model_turn',side_effect=responses):job=self.finished(self.start())
+        self.assertEqual(job['status'],'ready',job)
+        self.assertTrue(all(s['ok'] for s in job['steps']),job['steps'])
+        value=self.w.change_sets.read(job['set_id'])
+        self.assertEqual(value['revision'],job['set_revision'])
+        self.assertEqual(value['entries'][0]['spec']['synonym'],'Поставщики')
+        self.assertFalse((self.w.catalog.root/'Catalogs'/'ПоставщикиАгента.xml').exists())
+
+    def test_context_trimming_never_skips_metadata_page_items(self):
+        for next_offset,total in [(100,125),(None,100)]:
+            reply_=json.loads(pack_result({'ok':True,'result':{'items':list(range(100)),'total':total,'next_offset':next_offset}}))
+            self.assertEqual(len(reply_['result']['items']),20)
+            self.assertEqual(reply_['result']['next_offset'],20)
+            self.assertTrue(reply_['agent_context_truncated'])
+
+    def test_metadata_facts_survive_eviction_of_whole_chat_group(self):
+        self.w.ai.configure({'provider':'ollama',**DEFAULTS['ollama'],'model':'test-tools','context_chars':12000})
+        seen=[]
+        def model(*args):
+            history=args[3];seen.append(copy.deepcopy(history))
+            if len(seen)==1:
+                message,cut,usage=reply('list_objects',{'kinds':['Catalog']})
+                message['content']='Служебный текст. '*1500
+                return message,cut,usage
+            self.assertFalse(any(m['role']=='tool' for m in history))
+            recalled=next(json.loads(m['content']) for m in history if 'athena_verified_observations' in m['content'])
+            result=recalled['athena_verified_observations'][0]['result']
+            self.assertEqual(result['total'],len([n for n in self.w.catalog.nodes.values() if n['kind']=='Catalog']))
+            self.assertTrue(all('child_counts' in n for n in result['items']))
+            self.assertIsNone(result['next_offset'])
+            return reply(text='Счётчики получены из полного перечня XML.')
+        with patch('athena.code_agent.model_turn',side_effect=model):job=self.finished(self.start('analyze'))
+        self.assertEqual(job['status'],'ready',job)
+        self.assertEqual(job['rounds'],2)
+        self.assertGreater(job['history_compactions'],0)
+        self.assertEqual(job['memory_facts'],1)
+
+    def test_repeated_reads_use_cache_and_force_an_answer_without_increasing_limits(self):
+        root=next(n for n in self.w.catalog.nodes.values() if n['kind']=='Configuration')
+        histories=[]
+        def model(*args):
+            histories.append(args[3])
+            if not args[4]:return reply(text='Итог по уже прочитанной конфигурации.')
+            return reply('get_object',{'object_id':root['id']})
+        with patch.object(self.w.agent_tools,'call',wraps=self.w.agent_tools.call) as execute:
+            with patch('athena.code_agent.model_turn',side_effect=model):job=self.finished(self.start('analyze'))
+        self.assertEqual(job['status'],'ready',job)
+        self.assertEqual(execute.call_count,1)
+        self.assertEqual(job['rounds'],4)
+        self.assertEqual([s['cached'] for s in job['steps']],[False,True,True])
+        self.assertIn(root['name'],job['steps'][0]['detail'])
+        self.assertIn('athena_verified_observations',json.dumps(histories[-1]))
+
+    def test_draft_reads_are_not_reused_after_edit(self):
+        identity,path=self.fixture.file_id,self.fixture.file_path
+        text=read_text(path);old=text.splitlines()[0];new='// Новая версия\n'+old
+        responses=[reply('read_module',{'file_id':identity}),
+                   reply('edit_module',{'file_id':identity,'expected_hash':text_hash(text),'edits':[{'old_text':old,'new_text':new}]}),
+                   reply('read_module',{'file_id':identity}),reply(text='Проверено.')]
+        results=[]
+        def model(*args):
+            results.extend(json.loads(m['content']) for m in args[3][-1:] if m['role']=='tool' and m.get('name')=='read_module')
+            return responses.pop(0)
+        with patch('athena.code_agent.model_turn',side_effect=model):job=self.finished(self.start())
+        self.assertEqual(job['status'],'ready',job)
+        self.assertIn('Новая версия',results[-1]['result']['content'])
+        self.assertFalse(job['steps'][2]['cached'])
+
+    def test_final_tool_call_is_not_executed_and_verified_data_is_not_lost(self):
+        self.agent.configure({**self.agent.config,'max_steps':2})
+        with patch('athena.code_agent.model_turn',side_effect=lambda *args:reply('list_objects',{'kinds':['Catalog']})):
+            job=self.finished(self.start('analyze'))
+        self.assertEqual(job['status'],'stopped')
+        self.assertEqual(job['tool_calls'],1)
+        self.assertIn('Проверенные данные',job['answer'])
+        self.assertIn('| Объект |',job['answer'])
+        self.assertNotIn('Предложения',job['phase'])
+
+    def test_final_answer_requests_omit_tools_for_each_transport(self):
+        for provider,protocol in [('ollama','ollama'),('openai','chat'),('openai','responses')]:
+            raw={'message':{'content':'Итог'}} if protocol=='ollama' else {'choices':[{'message':{'content':'Итог'}}]} if protocol=='chat' else {'output':[{'type':'message','content':[{'type':'output_text','text':'Итог'}]}]}
+            with patch('athena.code_agent.request_json',return_value=raw) as request:
+                result,_,_=model_turn(provider,{**DEFAULTS[provider],'model':'test'},'',[{'role':'user','content':'Ответь'}],[],protocol,512)
+            self.assertEqual(result['content'],'Итог')
+            self.assertNotIn('tools',request.call_args.args[1])
+            self.assertNotIn('tool_choice',request.call_args.args[1])
 
     def test_cancel_suppresses_late_tool_calls_and_blocks_second_task(self):
         entered=threading.Event();release=threading.Event()

@@ -112,6 +112,8 @@ class Workspace:
         self.agent_tools = AgentTools(self, STATE.parent)
         from athena.code_agent import CodeAgent
         self.code_agent = CodeAgent(self, STATE.parent)
+        from athena.documentation import Documentation
+        self.documentation = Documentation(self, STATE.parent)
         self.semantic_config = STATE.parent / 'semantic.json'
         try:
             saved = json.loads(self.semantic_config.read_text(encoding='utf-8'))
@@ -218,6 +220,21 @@ class Workspace:
                 if mode=='semantic':raise ValueError(str(exc)) from exc
                 response.update(mode='lexical',results=self.knowledge.search_context(snapshot,query),warning='Смысловой поиск недоступен: '+str(exc))
         return response
+
+    def ai_context(self, question):
+        from athena.ai_metadata import inventory_request, structure_request
+        structure = structure_request(question)
+        kinds = structure['kinds'] if structure else inventory_request(question)
+        if kinds is None:
+            return self.search_functions(question)
+        with self.lock:
+            snapshot = self.knowledge_snapshot
+        if not snapshot:
+            raise ValueError('Сначала откройте проект и дождитесь индексации.')
+        inventory = self.knowledge.metadata_inventory(snapshot, kinds)
+        if structure:
+            inventory.update({k:v for k,v in structure.items() if k in {'field','fields'}})
+        return {'snapshot': snapshot, 'mode': 'metadata', 'results': [], 'inventory': inventory}
 
     def set_context(self):
         with self.lock:
@@ -434,6 +451,7 @@ class Workspace:
             self.auto.update(last_check=time.time(), phase='Ошибка проверки', error=message)
 
     def close(self):
+        self.documentation.close()
         self.code_agent.close()
         self.ai.close()
         self.auto_stop.set()
@@ -609,9 +627,16 @@ def handler(workspace):
                     if route.path == '/api/change-sets':
                         project, _, _ = workspace.set_context()
                         return self.respond({'sets': workspace.change_sets.list(project)})
+                    if route.path == '/api/documents':
+                        return self.respond(workspace.documentation.listing())
+                    if route.path == '/api/documents/job':
+                        return self.respond(workspace.documentation.read(parse_qs(route.query).get('id',[''])[0]))
                     if route.path == '/api/agent/tools':
                         from athena.agent_tools import definitions
-                        return self.respond({'tools': definitions(), 'protocol_version': 1})
+                        from athena.code_agent import tool_catalog
+                        return self.respond({'tools': definitions(), 'protocol_version': 1,
+                            'modes':{mode:[t['function']['name'] for t in tool_catalog(mode)] for mode in ['analyze','propose']},
+                            'automatic':['create_change_set']})
                     if route.path == '/api/agent/context':
                         return self.respond(workspace.agent_tools.context())
                     if route.path == '/api/agent/history':
@@ -648,6 +673,7 @@ def handler(workspace):
             allowed['/change-sets.js'] = ('change-sets.js', 'text/javascript')
             allowed['/agent-tools'] = ('agent-tools.html', 'text/html')
             allowed['/agent-tools.js'] = ('agent-tools.js', 'text/javascript')
+            allowed['/documentation.js'] = ('documentation.js', 'text/javascript')
             allowed['/code-agent.js'] = ('code-agent.js', 'text/javascript')
             if route.path not in allowed:
                 return self.respond({'error': 'Не найдено.'}, 404)
@@ -662,12 +688,23 @@ def handler(workspace):
             self.wfile.write(data)
 
         def do_POST(self):
-            if not self.authorized():
-                return self.respond({'error': 'Нет доступа.'}, 403)
+            authorized = self.authorized()
             try:
                 size = int(self.headers.get('Content-Length', 0))
                 if size < 0 or size > 4_000_000:
+                    if not authorized:
+                        return self.respond({'error': 'Нет доступа.'}, 403)
                     raise ValueError('Слишком большой запрос.')
+                # Closing with unread request bytes can reset the TCP connection on
+                # Windows before the client receives the 403. Drain only a bounded
+                # body, without parsing it or executing any unauthenticated action.
+                if not authorized:
+                    self.connection.settimeout(2)
+                    try:
+                        self.rfile.read(size)
+                    except OSError:
+                        pass
+                    return self.respond({'error': 'Нет доступа.'}, 403)
                 body = json.loads(self.rfile.read(size) or b'{}')
                 if not isinstance(body, dict):
                     raise ValueError('Ожидается объект параметров.')
@@ -682,6 +719,12 @@ def handler(workspace):
                     return self.respond(workspace.change_set_action(body))
                 if self.path == '/api/agent/call':
                     return self.respond(workspace.agent_tools.call(body))
+                if self.path == '/api/documents/start':
+                    return self.respond(workspace.documentation.start(body),202)
+                if self.path == '/api/documents/cancel':
+                    return self.respond(workspace.documentation.cancel(body.get('id')))
+                if self.path == '/api/documents/save':
+                    return self.respond(workspace.documentation.save(body))
                 if self.path == '/api/agent/start':
                     return self.respond(workspace.code_agent.start(body),202)
                 if self.path == '/api/agent/cancel':
@@ -699,7 +742,19 @@ def handler(workspace):
                 if self.path == '/api/ai/models':
                     return self.respond(workspace.ai.models())
                 if self.path == '/api/ai/ask':
-                    return self.respond(workspace.ai.start(body.get('question'),workspace.search_functions,workspace.knowledge,body.get('context_only',False)),202)
+                    return self.respond(workspace.ai.start(body.get('question'),workspace.ai_context,workspace.knowledge,body.get('context_only',False)),202)
+                if self.path == '/api/assistant/ask':
+                    from athena.ai_metadata import inventory_request, structure_request
+                    question = body.get('question')
+                    if not isinstance(question,str) or not question.strip() or len(question)>2000:
+                        raise ValueError('Введите вопрос до 2000 символов.')
+                    if inventory_request(question) is not None or structure_request(question):
+                        result=workspace.ai.start(question,workspace.ai_context,workspace.knowledge)
+                        return self.respond({**result,'engine':'ai'},202)
+                    context=workspace.agent_tools.context()
+                    result=workspace.code_agent.start({'goal':question,'mode':'analyze',
+                        'context':{k:context[k] for k in ['project','snapshot','workspace_revision']}})
+                    return self.respond({**result,'engine':'agent'},202)
                 if self.path == '/api/ai/cancel':
                     return self.respond(workspace.ai.cancel(body.get('id')))
                 if self.path == '/api/embeddings':
